@@ -1,6 +1,6 @@
 # Draft Report
 
-Generates commentary-free post-draft rankings for Sleeper fantasy football leagues. Teams are ranked by their highest-projected legal starting lineup using `ffanalytics` season projections. The report includes league-ranked positional radar charts plus each team's biggest draft reach and value.
+Generates commentary-free post-draft rankings for Sleeper fantasy football leagues. Teams are ranked by the KeepTradeCut redraft value of their strongest legal starting lineup, automatically using Superflex or 1QB rankings to match the league. `ffanalytics` season projections remain the source for the informational projected-points-per-game figure. The report includes league-ranked roster-slot radar charts plus each team's biggest draft reach and value.
 
 ## Setup
 

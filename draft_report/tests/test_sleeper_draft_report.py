@@ -7,8 +7,10 @@ import pytest
 import draft_report.sleeper_draft_report as draft_report
 from draft_report.sleeper_draft_report import (
     PlayerProjection,
+    add_ktc_values,
     add_kicker_vor_and_rerank,
     fantasypros_adp_settings,
+    fetch_ktc_rankings,
     build_team_results,
     combine_supplemental_projections,
     draft_impact_score,
@@ -17,6 +19,7 @@ from draft_report.sleeper_draft_report import (
     cached_projection_path,
     commentary_tone,
     league_context,
+    ktc_ranking_settings,
     normalize_name,
     overall_pick_from_round_slot,
     player_availability_concern,
@@ -32,7 +35,10 @@ from draft_report.sleeper_draft_report import (
 
 
 def player(name, position, points, rank=1):
-    return PlayerProjection(name, position, "NFL", points, points - 100, rank, float(rank))
+    return PlayerProjection(
+        name, position, "NFL", points, points - 100, rank,
+        adp=float(rank), ktc_value=float(points),
+    )
 
 
 def test_parse_args_loads_local_environment(monkeypatch, tmp_path):
@@ -133,6 +139,58 @@ def test_fantasypros_adp_settings_match_superflex_ppr_team_count():
     assert overall_pick_from_round_slot(4.0, 10) == 40
 
 
+def test_ktc_ranking_settings_match_sleeper_starting_lineup():
+    assert ktc_ranking_settings({"roster_positions": ["QB", "SUPER_FLEX", "BN"]}) == {
+        "format": 2, "roster_format": "superflex",
+    }
+    assert ktc_ranking_settings({"roster_positions": ["QB", "FLEX", "BN"]}) == {
+        "format": 1, "roster_format": "1qb",
+    }
+    assert ktc_ranking_settings({"roster_positions": ["QB", "QB", "BN"]})["format"] == 2
+
+
+def test_fetch_ktc_rankings_uses_superflex_page_and_normalizes_kicker():
+    class Response:
+        content = b"""<div class='onePlayer'><div class='player-name'><a>Josh Allen</a></div>
+        <p class='position'>QB1</p><div class='value'>9,744</div></div>
+        <div class='onePlayer'><div class='player-name'><a>Kicker One</a></div>
+        <p class='position'>PK1</p><div class='value'>500</div></div>"""
+
+        def raise_for_status(self):
+            return None
+
+    class Session:
+        def __init__(self):
+            self.urls = []
+
+        def get(self, url, **kwargs):
+            self.urls.append(url)
+            return Response()
+
+    session = Session()
+    result, settings = fetch_ktc_rankings(
+        {"roster_positions": ["QB", "SUPER_FLEX"]}, session=session, pages=1,
+    )
+
+    assert settings["format"] == 2
+    assert "format=2" in session.urls[0]
+    assert result.set_index("name").loc["Josh Allen", "ktc_value"] == 9744
+    assert result.set_index("name").loc["Kicker One", "position"] == "K"
+
+
+def test_add_ktc_values_matches_normalized_player_and_position():
+    projections = pd.DataFrame([
+        {"name": "D'Andre Swift Jr.", "position": "RB", "points": 200},
+    ])
+    values = pd.DataFrame([
+        {"name": "Dandre Swift", "position": "RB", "ktc_value": 7000},
+    ])
+
+    result = add_ktc_values(projections, values)
+
+    assert result["ktc_value"].item() == 7000
+
+
 def test_team_results_are_worst_to_best_and_reach_value_use_actual_pick():
     frame = pd.DataFrame([
         {"name": "Alpha QB", "team": "BUF", "position": "QB", "points": 300, "points_vor": 10, "rank": 10, "adp": 10},
@@ -170,6 +228,29 @@ def test_team_results_are_worst_to_best_and_reach_value_use_actual_pick():
         {"name": "Alpha QB", "position": "QB", "season_projection": 300.0},
         {"name": "Alpha RB", "position": "RB", "season_projection": 200.0},
     ]
+
+
+def test_team_results_rank_by_ktc_value_instead_of_projected_points():
+    frame = pd.DataFrame([
+        {"name": "Lower Projection", "team": "BUF", "position": "QB", "points": 250,
+         "points_vor": 10, "rank": 2, "adp": 2, "ktc_value": 9000},
+        {"name": "Higher Projection", "team": "KC", "position": "QB", "points": 350,
+         "points_vor": 20, "rank": 1, "adp": 1, "ktc_value": 7000},
+    ])
+    picks = [
+        {"roster_id": 1, "pick_no": 1, "metadata": {"full_name": "Lower Projection", "position": "QB"}},
+        {"roster_id": 2, "pick_no": 2, "metadata": {"full_name": "Higher Projection", "position": "QB"}},
+    ]
+    rosters = [{"roster_id": 1, "owner_id": "a"}, {"roster_id": 2, "owner_id": "b"}]
+
+    results, _ = build_team_results(
+        league={"roster_positions": ["QB"]}, rosters=rosters,
+        users={"a": {"display_name": "KTC Favorite"}, "b": {"display_name": "Projection Favorite"}},
+        picks=picks, projections=projection_index(frame),
+    )
+
+    assert [item["team"] for item in results] == ["Projection Favorite", "KTC Favorite"]
+    assert [item["rank"] for item in results] == [2, 1]
 
 
 def test_draft_impact_score_gives_early_picks_more_weight():
@@ -267,7 +348,7 @@ def test_radar_uses_positional_rank_among_teams():
         {"position_totals": {position: 100 for position in ("QB", "RB", "WR", "TE", "K", "DST")}},
         {"position_totals": {position: 200 for position in ("QB", "RB", "WR", "TE", "K", "DST")}},
     ]
-    rank_radar_values(results)
+    rank_radar_values(results, ("QB", "RB", "WR", "TE", "K", "DST"))
     assert set(results[0]["position_ranks"].values()) == {2}
     assert set(results[1]["position_ranks"].values()) == {1}
     assert set(results[0]["radar"].values()) == {1}
@@ -279,7 +360,7 @@ def test_radar_all_zero_position_stays_at_zero():
     totals["K"] = 0
     results = [{"position_totals": totals}]
 
-    rank_radar_values(results)
+    rank_radar_values(results, ("QB", "RB", "WR", "TE", "K", "DST"))
 
     assert results[0]["position_ranks"]["K"] is None
     assert results[0]["radar"]["K"] == 0
@@ -289,11 +370,40 @@ def test_radar_all_zero_position_stays_at_zero():
 
 def test_radar_omits_kicker_and_defense_when_league_does_not_use_them():
     assert radar_positions_for_league(["QB", "RB", "WR", "TE", "FLEX", "BN"]) == (
-        "QB", "RB", "WR", "TE",
+        "QB", "RB", "WR", "TE", "FLEX",
     )
     assert radar_positions_for_league(["QB", "RB", "WR", "TE", "K", "DEF", "BN"]) == (
         "QB", "RB", "WR", "TE", "K", "DST",
     )
+
+
+def test_flex_starters_are_scored_in_a_dedicated_equal_slot_bucket():
+    frame = pd.DataFrame([
+        {"name": "Team One RB", "team": "BUF", "position": "RB", "points": 200,
+         "points_vor": 1, "rank": 1, "adp": 1, "ktc_value": 8000},
+        {"name": "Team One WR", "team": "BUF", "position": "WR", "points": 190,
+         "points_vor": 1, "rank": 2, "adp": 2, "ktc_value": 7000},
+        {"name": "Team Two RB", "team": "KC", "position": "RB", "points": 180,
+         "points_vor": 1, "rank": 3, "adp": 3, "ktc_value": 6000},
+        {"name": "Team Two WR", "team": "KC", "position": "WR", "points": 170,
+         "points_vor": 1, "rank": 4, "adp": 4, "ktc_value": 5000},
+    ])
+    picks = [
+        {"roster_id": 1, "pick_no": 1, "metadata": {"full_name": "Team One RB", "position": "RB"}},
+        {"roster_id": 1, "pick_no": 2, "metadata": {"full_name": "Team One WR", "position": "WR"}},
+        {"roster_id": 2, "pick_no": 3, "metadata": {"full_name": "Team Two RB", "position": "RB"}},
+        {"roster_id": 2, "pick_no": 4, "metadata": {"full_name": "Team Two WR", "position": "WR"}},
+    ]
+    rosters = [{"roster_id": 1, "owner_id": "a"}, {"roster_id": 2, "owner_id": "b"}]
+
+    results, _ = build_team_results(
+        league={"roster_positions": ["RB", "FLEX"]}, rosters=rosters,
+        users={"a": {"display_name": "One"}, "b": {"display_name": "Two"}},
+        picks=picks, projections=projection_index(frame),
+    )
+
+    assert [item["position_totals"]["RB"] for item in results] == [6000, 8000]
+    assert [item["position_totals"]["FLEX"] for item in results] == [5000, 7000]
 
 
 def test_report_contains_only_structured_rankings_and_statistics():

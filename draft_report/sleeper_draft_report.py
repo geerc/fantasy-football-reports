@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import requests
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from openai import OpenAI, OpenAIError
 
@@ -33,16 +34,17 @@ SLEEPER_API = "https://api.sleeper.app/v1"
 FANTASYPROS_KICKERS = "https://www.fantasypros.com/nfl/projections/k.php?week=draft"
 FANTASYPROS_DEFENSES = "https://www.fantasypros.com/nfl/projections/dst.php?week=draft"
 FANTASYPROS_MOCK_ADP = "https://draftwizard.fantasypros.com/football/adp/mock-drafts/overall/{filters}"
+KTC_REDRAFT_RANKINGS = "https://keeptradecut.com/fantasy-rankings?page={page}&filters=QB|WR|RB|TE|DST|PK&format={format}"
 CBS_PROJECTIONS = "https://www.cbssports.com/fantasy/football/stats/{position}/{season}/restofseason/projections/nonppr/"
 NFL_REGULAR_SEASON_GAMES = 17
-RADAR_POSITIONS = ("QB", "RB", "WR", "TE", "K", "DST")
+RADAR_POSITIONS = ("QB", "RB", "WR", "TE", "FLEX", "SUPER_FLEX", "REC_FLEX", "WRRB_FLEX", "K", "DST")
 FLEX_ELIGIBILITY = {
     "FLEX": {"RB", "WR", "TE"},
     "SUPER_FLEX": {"QB", "RB", "WR", "TE"},
     "REC_FLEX": {"WR", "TE"},
     "WRRB_FLEX": {"WR", "RB"},
 }
-POSITION_ALIASES = {"DEF": "DST"}
+POSITION_ALIASES = {"DEF": "DST", "PK": "K"}
 DEFAULT_VOR_BASELINE = {"QB": 13, "RB": 35, "WR": 36, "TE": 13, "K": 8, "DST": 3}
 DEFAULT_AI_MODEL = "gpt-5.6-terra"
 DEFAULT_AI_REASONING_EFFORT = "low"
@@ -86,6 +88,7 @@ class PlayerProjection:
     points_vor: float
     vor_rank: int
     adp: float = math.nan
+    ktc_value: float = math.nan
 
 
 def api_get(path, *, session=requests):
@@ -224,6 +227,58 @@ def fetch_fantasypros_adp(league, team_count, *, session=requests):
     return result.dropna(subset=["name", "position", "adp"]), settings
 
 
+def ktc_ranking_settings(league):
+    roster_positions = [normalize_position(position) for position in league.get("roster_positions", [])]
+    superflex = "SUPER_FLEX" in roster_positions or roster_positions.count("QB") > 1
+    return {
+        "format": 2 if superflex else 1,
+        "roster_format": "superflex" if superflex else "1qb",
+    }
+
+
+def fetch_ktc_rankings(league, *, session=requests, pages=8):
+    settings = ktc_ranking_settings(league)
+    records = []
+    headers = {"User-Agent": "fantasy-football-reports/0.1"}
+    for page in range(pages):
+        response = session.get(
+            KTC_REDRAFT_RANKINGS.format(page=page, format=settings["format"]),
+            timeout=30,
+            headers=headers,
+        )
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, "html.parser")
+        for row in soup.select("div.onePlayer"):
+            name = row.select_one("div.player-name a")
+            position = row.select_one("p.position")
+            value = row.select_one("div.value")
+            if all((name, position, value)):
+                records.append({
+                    "name": name.get_text(strip=True),
+                    "position": normalize_position(re.sub(r"\d+$", "", position.get_text(strip=True))),
+                    "ktc_value": pd.to_numeric(value.get_text(strip=True).replace(",", ""), errors="coerce"),
+                })
+    frame = pd.DataFrame(records).dropna(subset=["name", "ktc_value"]).drop_duplicates(
+        ["name", "position"], keep="first",
+    )
+    if frame.empty:
+        raise ValueError("KeepTradeCut returned no fantasy-ranking values")
+    return frame, settings
+
+
+def add_ktc_values(projections, values):
+    result = projections.copy()
+    result["ktc_key"] = result.apply(
+        lambda row: f"{normalize_name(row['name'])}:{normalize_position(row['position'])}", axis=1,
+    )
+    values = values.copy()
+    values["ktc_key"] = values.apply(
+        lambda row: f"{normalize_name(row['name'])}:{normalize_position(row['position'])}", axis=1,
+    )
+    values = values.drop_duplicates("ktc_key", keep="first")[["ktc_key", "ktc_value"]]
+    return result.merge(values, on="ktc_key", how="left").drop(columns="ktc_key")
+
+
 def add_adp_to_projections(projections, adp):
     result = projections.copy()
     result["adp_key"] = result.apply(
@@ -309,10 +364,14 @@ def add_kicker_vor_and_rerank(projections, kickers, baseline=DEFAULT_VOR_BASELIN
 def projection_index(frame):
     index = {}
     for row in frame.itertuples(index=False):
+        ktc_value = (
+            float(row.ktc_value) if pd.notna(row.ktc_value) else math.nan
+        ) if hasattr(row, "ktc_value") else float(row.points)
         item = PlayerProjection(
             name=str(row.name), position=normalize_position(row.position), team=str(row.team),
             points=float(row.points), points_vor=float(row.points_vor), vor_rank=int(row.rank),
             adp=float(row.adp) if hasattr(row, "adp") and pd.notna(row.adp) else math.nan,
+            ktc_value=ktc_value,
         )
         index[(normalize_name(item.name), item.position)] = item
         if item.position == "DST" and item.name.lower() in NFL_TEAM_CODES:
@@ -380,16 +439,19 @@ def eligible(player_position, slot):
     return player_position == slot or player_position in FLEX_ELIGIBILITY.get(slot, set())
 
 
-def optimize_lineup(players, roster_positions):
+def optimize_lineup(players, roster_positions, score_attribute="points"):
     slots = [slot for slot in roster_positions if slot not in {"BN", "IR", "TAXI"}]
     states = {0: (0.0, [])}
     for player in players:
+        player_score = float(getattr(player, score_attribute))
+        if not math.isfinite(player_score):
+            continue
         next_states = dict(states)
         for mask, (score, selected) in states.items():
             for slot_index, slot in enumerate(slots):
                 bit = 1 << slot_index
                 if not mask & bit and eligible(player.position, slot):
-                    candidate = (score + player.points, selected + [(slot, player)])
+                    candidate = (score + player_score, selected + [(slot, player)])
                     if candidate[0] > next_states.get(mask | bit, (-math.inf, []))[0]:
                         next_states[mask | bit] = candidate
         states = next_states
@@ -495,11 +557,15 @@ def build_team_results(*, league, rosters, users, picks, projections, player_cat
                     unmatched.append(f"{name or player_id} ({position or 'unknown'})")
                 else:
                     roster_players.append(projection)
-        score, starters = optimize_lineup(roster_players, league["roster_positions"])
+        ktc_score, starters = optimize_lineup(
+            roster_players, league["roster_positions"], score_attribute="ktc_value",
+        )
+        projected_score = sum(player.points for _, player in starters)
         position_totals = {position: 0.0 for position in RADAR_POSITIONS}
-        for _, player in starters:
-            if player.position in position_totals:
-                position_totals[player.position] += player.points
+        for slot, player in starters:
+            slot = normalize_position(slot)
+            if slot in position_totals:
+                position_totals[slot] += player.ktc_value
         deltas = [
             (int(pick["pick_no"]), player, player.adp - int(pick["pick_no"]))
             for pick, player in drafted
@@ -508,8 +574,9 @@ def build_team_results(*, league, rosters, users, picks, projections, player_cat
         results.append({
             "roster_id": roster_id,
             "team": team_name(roster_id, rosters, users),
-            "projected_points": score,
-            "projected_points_per_game": score / NFL_REGULAR_SEASON_GAMES,
+            "ktc_value": ktc_score,
+            "projected_points": projected_score,
+            "projected_points_per_game": projected_score / NFL_REGULAR_SEASON_GAMES,
             "position_totals": position_totals,
             "roster_construction": dict(sorted(Counter(player.position for player in roster_players).items())),
             "availability_concerns": availability_concerns,
@@ -530,7 +597,7 @@ def build_team_results(*, league, rosters, users, picks, projections, player_cat
                 key=lambda item: draft_impact_score(item[0], item[2], total_picks),
             ) if deltas else None,
         })
-    results.sort(key=lambda item: item["projected_points"])
+    results.sort(key=lambda item: item["ktc_value"])
     for rank, result in enumerate(reversed(results), 1):
         result["rank"] = rank
     unmatched = list(dict.fromkeys(unmatched))
@@ -538,11 +605,15 @@ def build_team_results(*, league, rosters, users, picks, projections, player_cat
 
 
 def radar_positions_for_league(roster_positions):
-    league_positions = {normalize_position(position) for position in roster_positions}
+    league_positions = {
+        normalize_position(position)
+        for position in roster_positions
+        if normalize_position(position) not in {"BN", "IR", "TAXI"}
+    }
     return tuple(
         position
         for position in RADAR_POSITIONS
-        if position not in {"K", "DST"} or position in league_positions
+        if position in league_positions
     )
 
 
@@ -552,7 +623,7 @@ def rank_radar_values(results, positions=RADAR_POSITIONS):
         item["team_count"] = team_count
         item["radar_positions"] = tuple(positions)
     for position in positions:
-        values = pd.Series([item["position_totals"][position] for item in results])
+        values = pd.Series([item["position_totals"].get(position, 0) for item in results])
         if values.max() == 0:
             for item in results:
                 item.setdefault("position_ranks", {})[position] = None
@@ -693,6 +764,10 @@ def generate_ai_commentary(
             "league_size": result["team_count"],
             "editorial_tone": commentary_tone(result["rank"], result["team_count"]),
             "projected_starter_points_per_game": round(result["projected_points_per_game"], 1),
+            "ranking_source": {
+                "provider": "KeepTradeCut fantasy rankings",
+                **result.get("ktc_settings", {}),
+            },
             "adp_settings": result.get("adp_settings", {}),
             "roster_construction": result.get("roster_construction", {}),
             "roster": result.get("roster", []),
@@ -848,8 +923,10 @@ def run(args):
         fetch_fantasypros_position("K"), fetch_fantasypros_position("DST"),
     )
     adp, adp_settings = fetch_fantasypros_adp(league, len(rosters))
+    ktc_values, ktc_settings = fetch_ktc_rankings(league)
     projection_frame = add_supplemental_vor_and_rerank(base, supplemental)
-    projections = projection_index(add_adp_to_projections(projection_frame, adp))
+    projection_frame = add_adp_to_projections(projection_frame, adp)
+    projections = projection_index(add_ktc_values(projection_frame, ktc_values))
     results, unmatched = build_team_results(
         league=league, rosters=rosters, users=users, picks=picks, projections=projections,
         player_catalog=player_catalog,
@@ -857,6 +934,7 @@ def run(args):
     rank_radar_values(results, radar_positions_for_league(league["roster_positions"]))
     for result in results:
         result["adp_settings"] = adp_settings
+        result["ktc_settings"] = ktc_settings
     if args.ai_commentary:
         generate_ai_commentary(
             league=league, results=results, api_key=os.getenv("OPENAI_API_KEY"), model=args.ai_model,
