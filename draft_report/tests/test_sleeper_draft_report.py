@@ -21,6 +21,7 @@ from draft_report.sleeper_draft_report import (
     league_context,
     ktc_ranking_settings,
     normalize_name,
+    normalize_nfl_team,
     overall_pick_from_round_slot,
     player_availability_concern,
     radar_positions_for_league,
@@ -29,8 +30,13 @@ from draft_report.sleeper_draft_report import (
     pick_summary,
     projection_index,
     render_report,
+    report_directory_name,
     render_report_html,
     response_markdown_with_citations,
+    safe_directory_name,
+    simulate_projected_standings,
+    simulation_slots,
+    weekly_lineup_value,
 )
 
 
@@ -54,7 +60,8 @@ def test_parse_args_loads_local_environment(monkeypatch, tmp_path):
     assert args.ai_workers == 4
     assert draft_report.DEFAULT_AI_MODEL == "gpt-5.6-terra"
     assert args.ai_reasoning_effort == "low"
-    assert args.refresh_projections is False
+    assert args.simulations == 100000
+    assert args.simulation_seed == 2026
 
 
 def test_projection_cache_is_scoped_by_season_and_scoring(tmp_path):
@@ -75,6 +82,12 @@ def test_normalize_name_handles_suffixes_and_punctuation():
 def test_normalize_name_handles_sleeper_projection_aliases():
     assert normalize_name("Kenny Gainwell") == normalize_name("Kenneth Gainwell")
     assert normalize_name("Chig Okonkwo") == normalize_name("Chigoziem Okonkwo")
+
+
+def test_normalize_nfl_team_handles_ktc_and_espn_aliases():
+    assert normalize_nfl_team("KCC") == "KC"
+    assert normalize_nfl_team("SFO") == "SF"
+    assert normalize_nfl_team("WSH") == "WAS"
 
 
 def test_optimize_lineup_maximizes_legal_flex_lineup():
@@ -222,11 +235,11 @@ def test_team_results_are_worst_to_best_and_reach_value_use_actual_pick():
     assert results[0]["reach"][2] == 9
     assert results[0]["value"][1].name == "Alpha RB"
     assert results[0]["value"][2] == 0
-    assert results[0]["projected_points_per_game"] == pytest.approx(500 / 17)
+    assert results[0]["ktc_value"] == 500
     assert results[0]["roster_construction"] == {"QB": 1, "RB": 1}
     assert results[0]["roster"] == [
-        {"name": "Alpha QB", "position": "QB", "season_projection": 300.0},
-        {"name": "Alpha RB", "position": "RB", "season_projection": 200.0},
+        {"name": "Alpha QB", "position": "QB"},
+        {"name": "Alpha RB", "position": "RB"},
     ]
 
 
@@ -321,7 +334,7 @@ def test_team_results_use_full_sleeper_roster():
     )
 
     assert unmatched == []
-    assert results[0]["projected_points"] == 500
+    assert results[0]["ktc_value"] == 500
     assert results[0]["reach"][1].name == "Drafted RB"
 
 
@@ -375,6 +388,9 @@ def test_radar_omits_kicker_and_defense_when_league_does_not_use_them():
     assert radar_positions_for_league(["QB", "RB", "WR", "TE", "K", "DEF", "BN"]) == (
         "QB", "RB", "WR", "TE", "K", "DST",
     )
+    assert radar_positions_for_league(["QB", "SUPER_FLEX", "RB", "BN"]) == (
+        "QB", "RB",
+    )
 
 
 def test_flex_starters_are_scored_in_a_dedicated_equal_slot_bucket():
@@ -408,21 +424,30 @@ def test_flex_starters_are_scored_in_a_dedicated_equal_slot_bucket():
 
 def test_report_contains_only_structured_rankings_and_statistics():
     item = {
-        "rank": 1, "roster_id": 7, "team": "Champions", "projected_points": 1234.56,
-        "projected_points_per_game": 72.621,
+        "rank": 1, "roster_id": 7, "team": "Champions",
         "reach": (3, player("Reach", "WR", 100, rank=12), 9),
         "value": (30, player("Value", "RB", 100, rank=10), -20),
         "position_ranks": {"QB": 2, "RB": 1},
         "availability_concerns": ["Risky Player (WR): Questionable — Knee"],
+        "commentary": "- Strong quarterback room.\n- Thin at running back.",
+        "full_overview": False,
     }
-    content = render_report(league={"season": "2026", "name": "League"}, results=[item])
+    standings = pd.DataFrame([{
+        "Rank": 1, "Team": "Champions", "Projected Wins": 10.25, "Playoff Probability": 85.5,
+    }])
+    content = render_report(
+        league={"season": "2026", "name": "League"}, results=[item], standings=standings,
+    )
 
     assert "## #1 Champions" in content
-    assert "Projected starter points per game:** 72.6" in content
+    assert "Projected starter points" not in content
     assert "team-7-radar.png" in content
     assert pick_summary(item["reach"]) in content
     assert "Position-group rankings:** QB #2, RB #1" in content
     assert "Risky Player (WR): Questionable — Knee" in content
+    assert "- Strong quarterback room." in content
+    assert "## Projected Standings" in content
+    assert "| 1 | Champions | 10.2 | 85.5% |" in content
 
 
 def test_report_html_wraps_markdown_and_writes_site_styles(tmp_path):
@@ -477,11 +502,9 @@ def test_ai_commentary_is_opt_in_and_uses_roster_research_context():
         "team": "Alpha",
         "rank": 2,
         "team_count": 12,
-        "projected_points": 1900.25,
-        "projected_points_per_game": 111.779,
         "adp_settings": {"roster_format": "2qb", "scoring": "ppr", "team_count": 12},
         "roster_construction": {"QB": 2, "RB": 6, "WR": 7, "TE": 2},
-        "roster": [{"name": "Example Player", "position": "WR", "season_projection": 200.0}],
+        "roster": [{"name": "Example Player", "position": "WR"}],
         "position_ranks": {"QB": 3, "RB": 8, "K": None},
         "reach": (3, player("Reach", "WR", 100, rank=12), 9),
         "value": (30, player("Value", "RB", 100, rank=10), -20),
@@ -505,7 +528,7 @@ def test_ai_commentary_is_opt_in_and_uses_roster_research_context():
     assert statistics["position_ranks"] == {"QB": 3, "RB": 8}
     assert statistics["roster_construction"] == {"QB": 2, "RB": 6, "WR": 7, "TE": 2}
     assert statistics["league_context"]["format"] == "best ball"
-    assert statistics["projected_starter_points_per_game"] == 111.8
+    assert "projected_starter_points_per_game" not in statistics
     assert statistics["adp_settings"]["roster_format"] == "2qb"
     assert statistics["editorial_tone"].startswith("strongly positive")
     assert statistics["roster"][0]["name"] == "Example Player"
@@ -513,6 +536,7 @@ def test_ai_commentary_is_opt_in_and_uses_roster_research_context():
     assert "informal" in calls[0]["instructions"]
     assert "never as VOR" in calls[0]["instructions"]
     assert "source of truth" in calls[0]["instructions"]
+    assert "exactly 3-5" in calls[0]["instructions"]
 
 
 def test_web_citations_are_rendered_as_clickable_footnotes():
@@ -542,11 +566,49 @@ def test_ai_commentary_requires_api_key_without_injected_client():
 
 def test_report_includes_commentary_only_when_present():
     item = {
-        "rank": 1, "roster_id": 7, "team": "Champions", "projected_points": 1234.56,
-        "projected_points_per_game": 72.621,
+        "rank": 1, "roster_id": 7, "team": "Champions",
         "reach": None, "value": None, "commentary": "A concise statistical assessment.",
+        "full_overview": True,
     }
-
-    content = render_report(league={"season": "2026", "name": "League"}, results=[item])
+    standings = pd.DataFrame([{
+        "Rank": 1, "Team": "Champions", "Projected Wins": 10, "Playoff Probability": 100,
+    }])
+    content = render_report(
+        league={"season": "2026", "name": "League"}, results=[item], standings=standings,
+    )
 
     assert "A concise statistical assessment." in content
+
+
+def test_simulation_excludes_kicker_and_defense_and_replaces_bye_players():
+    slots = simulation_slots(["QB", "RB", "SUPER_FLEX", "K", "DEF", "BN"])
+    assert slots == ["QB", "RB", "SUPER_FLEX"]
+    roster = [
+        PlayerProjection("QB One", "QB", "BUF", 0, 0, 1, ktc_value=9000),
+        PlayerProjection("QB Two", "QB", "KC", 0, 0, 2, ktc_value=8000),
+        PlayerProjection("RB One", "RB", "DAL", 0, 0, 3, ktc_value=7000),
+    ]
+    assert weekly_lineup_value(roster, slots, {"BUF"}, {"QB": 6000, "RB": 5000, "SUPER_FLEX": 6000}) == 21000
+
+
+def test_projected_standings_use_schedule_and_return_playoff_odds():
+    strong = PlayerProjection("Strong QB", "QB", "BUF", 0, 0, 1, ktc_value=9000)
+    weak = PlayerProjection("Weak QB", "QB", "DAL", 0, 0, 2, ktc_value=3000)
+    results = [
+        {"roster_id": 1, "team": "Strong", "_players": [strong]},
+        {"roster_id": 2, "team": "Weak", "_players": [weak]},
+    ]
+    standings = simulate_projected_standings(
+        results=results, roster_positions=["QB", "K"], schedule={1: [(1, 2)], 2: [(1, 2)]},
+        bye_teams={1: set(), 2: set()}, playoff_teams=1, simulations=5000, seed=7,
+    )
+    assert standings.iloc[0]["Team"] == "Strong"
+    assert standings.iloc[0]["Projected Wins"] > standings.iloc[1]["Projected Wins"]
+    assert standings.iloc[0]["Playoff Probability"] > 90
+
+
+def test_safe_directory_name_keeps_league_names_and_removes_path_characters():
+    assert safe_directory_name("SYPIP") == "SYPIP"
+    assert safe_directory_name("League / One") == "League - One"
+    assert report_directory_name("SYPIP", False) == "SYPIP"
+    assert report_directory_name("SYPIP", True) == "SYPIP_ai"

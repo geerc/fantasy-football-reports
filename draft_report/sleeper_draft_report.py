@@ -37,7 +37,9 @@ FANTASYPROS_MOCK_ADP = "https://draftwizard.fantasypros.com/football/adp/mock-dr
 KTC_REDRAFT_RANKINGS = "https://keeptradecut.com/fantasy-rankings?page={page}&filters=QB|WR|RB|TE|DST|PK&format={format}"
 CBS_PROJECTIONS = "https://www.cbssports.com/fantasy/football/stats/{position}/{season}/restofseason/projections/nonppr/"
 NFL_REGULAR_SEASON_GAMES = 17
-RADAR_POSITIONS = ("QB", "RB", "WR", "TE", "FLEX", "SUPER_FLEX", "REC_FLEX", "WRRB_FLEX", "K", "DST")
+RADAR_POSITIONS = ("QB", "RB", "WR", "TE", "FLEX", "REC_FLEX", "WRRB_FLEX", "K", "DST")
+SIMULATION_EXCLUDED_POSITIONS = {"K", "DST"}
+NFL_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
 FLEX_ELIGIBILITY = {
     "FLEX": {"RB", "WR", "TE"},
     "SUPER_FLEX": {"QB", "RB", "WR", "TE"},
@@ -45,6 +47,10 @@ FLEX_ELIGIBILITY = {
     "WRRB_FLEX": {"WR", "RB"},
 }
 POSITION_ALIASES = {"DEF": "DST", "PK": "K"}
+NFL_TEAM_ALIASES = {
+    "JAC": "JAX", "KCC": "KC", "LVR": "LV", "NEP": "NE", "NOS": "NO",
+    "SFO": "SF", "TBB": "TB", "WSH": "WAS",
+}
 DEFAULT_VOR_BASELINE = {"QB": 13, "RB": 35, "WR": 36, "TE": 13, "K": 8, "DST": 3}
 DEFAULT_AI_MODEL = "gpt-5.6-terra"
 DEFAULT_AI_REASONING_EFFORT = "low"
@@ -106,6 +112,11 @@ def normalize_name(value):
 
 def normalize_position(value):
     return POSITION_ALIASES.get(str(value).upper(), str(value).upper())
+
+
+def normalize_nfl_team(value):
+    team = str(value or "").upper()
+    return NFL_TEAM_ALIASES.get(team, team)
 
 
 def run_ffanalytics(*, season, scoring_settings, output_path, rscript="Rscript"):
@@ -253,8 +264,10 @@ def fetch_ktc_rankings(league, *, session=requests, pages=8):
             position = row.select_one("p.position")
             value = row.select_one("div.value")
             if all((name, position, value)):
+                team = row.select_one("div.player-name span.player-team")
                 records.append({
                     "name": name.get_text(strip=True),
+                    "team": normalize_nfl_team(team.get_text(strip=True) if team else ""),
                     "position": normalize_position(re.sub(r"\d+$", "", position.get_text(strip=True))),
                     "ktc_value": pd.to_numeric(value.get_text(strip=True).replace(",", ""), errors="coerce"),
                 })
@@ -277,6 +290,14 @@ def add_ktc_values(projections, values):
     )
     values = values.drop_duplicates("ktc_key", keep="first")[["ktc_key", "ktc_value"]]
     return result.merge(values, on="ktc_key", how="left").drop(columns="ktc_key")
+
+
+def ktc_player_frame(values):
+    frame = values.copy()
+    frame["points"] = frame["ktc_value"]
+    frame["points_vor"] = frame["ktc_value"]
+    frame["rank"] = frame["ktc_value"].rank(method="min", ascending=False).astype(int)
+    return frame[["name", "team", "position", "points", "points_vor", "rank", "ktc_value"]]
 
 
 def add_adp_to_projections(projections, adp):
@@ -560,10 +581,11 @@ def build_team_results(*, league, rosters, users, picks, projections, player_cat
         ktc_score, starters = optimize_lineup(
             roster_players, league["roster_positions"], score_attribute="ktc_value",
         )
-        projected_score = sum(player.points for _, player in starters)
         position_totals = {position: 0.0 for position in RADAR_POSITIONS}
         for slot, player in starters:
             slot = normalize_position(slot)
+            if slot == "SUPER_FLEX":
+                slot = "QB"
             if slot in position_totals:
                 position_totals[slot] += player.ktc_value
         deltas = [
@@ -575,16 +597,14 @@ def build_team_results(*, league, rosters, users, picks, projections, player_cat
             "roster_id": roster_id,
             "team": team_name(roster_id, rosters, users),
             "ktc_value": ktc_score,
-            "projected_points": projected_score,
-            "projected_points_per_game": projected_score / NFL_REGULAR_SEASON_GAMES,
             "position_totals": position_totals,
+            "_players": roster_players,
             "roster_construction": dict(sorted(Counter(player.position for player in roster_players).items())),
             "availability_concerns": availability_concerns,
             "roster": [
                 {
                     "name": player.name,
                     "position": player.position,
-                    "season_projection": round(player.points, 1),
                 }
                 for player in sorted(roster_players, key=lambda player: (player.position, -player.points, player.name))
             ],
@@ -610,11 +630,147 @@ def radar_positions_for_league(roster_positions):
         for position in roster_positions
         if normalize_position(position) not in {"BN", "IR", "TAXI"}
     }
+    if "SUPER_FLEX" in league_positions:
+        league_positions.remove("SUPER_FLEX")
+        league_positions.add("QB")
     return tuple(
         position
         for position in RADAR_POSITIONS
         if position in league_positions
     )
+
+
+def simulation_slots(roster_positions):
+    return [
+        normalize_position(slot)
+        for slot in roster_positions
+        if normalize_position(slot) not in {"BN", "IR", "TAXI", *SIMULATION_EXCLUDED_POSITIONS}
+    ]
+
+
+def partial_lineup(players, slots):
+    states = {0: (0.0, [])}
+    for player in players:
+        if not math.isfinite(player.ktc_value):
+            continue
+        next_states = dict(states)
+        for mask, (score, selected) in states.items():
+            for slot_index, slot in enumerate(slots):
+                bit = 1 << slot_index
+                if not mask & bit and eligible(player.position, slot):
+                    candidate = (score + player.ktc_value, selected + [(slot_index, slot, player)])
+                    if candidate[0] > next_states.get(mask | bit, (-math.inf, []))[0]:
+                        next_states[mask | bit] = candidate
+        states = next_states
+    mask, (score, selected) = max(
+        states.items(), key=lambda item: (bin(item[0]).count("1"), item[1][0]),
+    )
+    missing = [slot for index, slot in enumerate(slots) if not mask & (1 << index)]
+    return score, selected, missing
+
+
+def replacement_values(results, slots):
+    by_slot = {slot: [] for slot in set(slots)}
+    for result in results:
+        _, selected, _ = partial_lineup(result["_players"], slots)
+        for _, slot, player in selected:
+            by_slot[slot].append(player.ktc_value)
+    overall = [value for values in by_slot.values() for value in values]
+    fallback = float(np.mean(overall)) if overall else 0.0
+    return {
+        slot: float(np.mean(values)) if values else fallback
+        for slot, values in by_slot.items()
+    }
+
+
+def weekly_lineup_value(players, slots, bye_teams, replacements):
+    available = [player for player in players if normalize_nfl_team(player.team) not in bye_teams]
+    score, _, missing = partial_lineup(available, slots)
+    return score + sum(replacements[slot] for slot in missing)
+
+
+def fetch_nfl_byes(season, regular_season_weeks, *, session=requests):
+    all_teams = set(NFL_TEAM_CODES.values())
+    byes = {week: set() for week in range(1, regular_season_weeks + 1)}
+    for week in range(1, regular_season_weeks + 1):
+        response = session.get(
+            NFL_SCOREBOARD,
+            params={"dates": season, "seasontype": 2, "week": week, "limit": 100},
+            timeout=30,
+        )
+        response.raise_for_status()
+        playing = {
+            normalize_nfl_team(team["team"]["abbreviation"])
+            for event in response.json().get("events", [])
+            for team in event["competitions"][0]["competitors"]
+        }
+        if not playing:
+            raise ValueError(f"NFL schedule returned no games for regular-season week {week}")
+        absent = all_teams - playing
+        if 4 <= week <= 14:
+            byes[week] = absent
+    return byes
+
+
+def fetch_league_schedule(league_id, regular_season_weeks):
+    schedule = {}
+    for week in range(1, regular_season_weeks + 1):
+        groups = {}
+        for entry in api_get(f"/league/{league_id}/matchups/{week}"):
+            if entry.get("matchup_id") is not None:
+                groups.setdefault(int(entry["matchup_id"]), []).append(int(entry["roster_id"]))
+        schedule[week] = [tuple(rosters) for rosters in groups.values() if len(rosters) == 2]
+        if not schedule[week]:
+            raise ValueError(f"Sleeper returned no head-to-head schedule for week {week}")
+    return schedule
+
+
+def simulate_projected_standings(
+    *, results, roster_positions, schedule, bye_teams, playoff_teams,
+    league_median=False, simulations=100000, seed=2026, weekly_variance=0.18,
+):
+    slots = simulation_slots(roster_positions)
+    replacements = replacement_values(results, slots)
+    roster_ids = [result["roster_id"] for result in results]
+    index = {roster_id: item for item, roster_id in enumerate(roster_ids)}
+    strengths = {
+        week: np.array([
+            weekly_lineup_value(result["_players"], slots, bye_teams.get(week, set()), replacements)
+            for result in results
+        ])
+        for week in schedule
+    }
+    rng = np.random.default_rng(seed)
+    wins = np.zeros((simulations, len(results)), dtype=np.float32)
+    points = np.zeros_like(wins)
+    for week, matchups in schedule.items():
+        means = strengths[week]
+        scores = np.maximum(0, rng.normal(means, np.maximum(means * weekly_variance, 1), (simulations, len(results))))
+        points += scores
+        for first, second in matchups:
+            left, right = index[first], index[second]
+            wins[:, left] += scores[:, left] > scores[:, right]
+            wins[:, right] += scores[:, right] > scores[:, left]
+            ties = scores[:, left] == scores[:, right]
+            wins[ties, left] += 0.5
+            wins[ties, right] += 0.5
+        if league_median:
+            median = np.median(scores, axis=1)
+            wins += (scores > median[:, None]).astype(np.float32)
+            wins += 0.5 * (scores == median[:, None])
+    tie_break = points / np.maximum(points.max(axis=1, keepdims=True), 1) * 0.001
+    order = np.argsort(-(wins + tie_break), axis=1)
+    made_playoffs = np.zeros_like(wins)
+    rows = np.arange(simulations)[:, None]
+    made_playoffs[rows, order[:, :min(playoff_teams, len(results))]] = 1
+    frame = pd.DataFrame({
+        "Team": [result["team"] for result in results],
+        "Projected Wins": wins.mean(axis=0),
+        "Playoff Probability": made_playoffs.mean(axis=0) * 100,
+    }).sort_values(["Projected Wins", "Playoff Probability"], ascending=False).reset_index(drop=True)
+    frame.insert(0, "Rank", range(1, len(frame) + 1))
+    frame.attrs["simulations"] = simulations
+    return frame
 
 
 def rank_radar_values(results, positions=RADAR_POSITIONS):
@@ -728,32 +884,37 @@ def commentary_tone(overall_rank, league_size):
 
 def generate_ai_commentary(
     *, league, results, api_key, model, client=None, workers=4,
-    reasoning_effort=DEFAULT_AI_REASONING_EFFORT,
+    reasoning_effort=DEFAULT_AI_REASONING_EFFORT, full_overview=False,
 ):
     if client is None:
         if not api_key:
-            raise ValueError("OPENAI_API_KEY is required when --ai-commentary is enabled")
+            raise ValueError("OPENAI_API_KEY is required to generate roster analysis")
         client = OpenAI(api_key=api_key)
-    instructions = (
+    shared_instructions = (
         "Write as an entertaining fantasy-football fan reacting to a roster after the draft. Use an informal, "
         "conversational voice—not a formal analyst voice or scouting report. Be playful, opinionated, and willing "
         "to exaggerate for entertainment: hype up strong teams and roast weak teams, while keeping factual claims "
-        "grounded. Do not recite the projected points per game or overall league "
-        "rank, because the report already displays them. Research the roster's players using current, reputable "
+        "grounded. Do not recite the overall league rank because the report already displays it. Research the "
+        "roster's players using current, reputable "
         "fantasy football sources such as ESPN, FantasyPros, CBS Sports, and official NFL or team coverage. In "
         "4-6 punchy sentences, explain where the roster construction thrives, where it falls short, and which "
         "players or position groups drive that verdict. Implicitly account for the supplied league format and "
         "scoring rules; best ball roster construction and risk tolerance differ from a managed-lineup leagues. "
         "Use overall rank as the source of truth for the analysis's sentiment and follow the supplied editorial "
         "tone: higher-ranked teams should read more positively and lower-ranked teams more critically. Every "
-        "team must still receive at least one genuine strength and one genuine concern. Use the projections, "
-        "positional ranks, biggest value, and biggest reach as evidence rather than merely repeating them. The "
+        "team must still receive at least one genuine strength and one genuine concern. Use positional ranks, "
+        "biggest value, and biggest reach as evidence rather than merely repeating them. The "
         "biggest value and biggest reach are calculated from FantasyPros ADP adjusted for this league's team "
         "count, PPR scoring, and superflex/2-QB roster format; discuss them as ADP values, never as VOR. Be "
         "engaging, colorful, and bombastic—celebrate sharp drafting like a league-winning heist and roast bad "
         "decisions like draft-night disasters. Distinguish sourced facts from your analysis, never invent facts, and "
-        "cite web-derived claims; the application will format those citations as footnotes at the end of the "
-        "team summary. Return prose without a heading or bullet list."
+        "cite web-derived claims; the application will format those citations as footnotes at the end of the team summary. "
+    )
+    instructions = shared_instructions + (
+        "Write 4-6 punchy sentences of prose without a heading or bullet list."
+        if full_overview else
+        "Return exactly 3-5 concise Markdown bullet points covering the most important positive or negative aspects "
+        "of this roster's construction. Do not add a heading or introductory sentence."
     )
     def generate_for_team(result):
         statistics = {
@@ -763,7 +924,6 @@ def generate_ai_commentary(
             "overall_rank": result["rank"],
             "league_size": result["team_count"],
             "editorial_tone": commentary_tone(result["rank"], result["team_count"]),
-            "projected_starter_points_per_game": round(result["projected_points_per_game"], 1),
             "ranking_source": {
                 "provider": "KeepTradeCut fantasy rankings",
                 **result.get("ktc_settings", {}),
@@ -807,7 +967,17 @@ def generate_ai_commentary(
         for future in as_completed(futures):
             print(f"Generated AI commentary for {future.result()}")
 
-def render_report(*, league, results):
+def standings_markdown(standings):
+    header = ["| Rank | Team | Projected Wins | Playoff Probability |", "|---:|---|---:|---:|"]
+    rows = [
+        f"| {int(row['Rank'])} | {row['Team']} | {row['Projected Wins']:.1f} | "
+        f"{row['Playoff Probability']:.1f}% |"
+        for _, row in standings.iterrows()
+    ]
+    return "\n".join(header + rows)
+
+
+def render_report(*, league, results, standings):
     sections = [
         "+++", f'title = "{league["season"]} Post-Draft Rankings"', f'date = "{date.today()}"',
         "draft = false", "+++", "", f"# {league['name']} Post-Draft Rankings", "",
@@ -816,10 +986,9 @@ def render_report(*, league, results):
         image_name = f"team-{result['roster_id']}-radar.png"
         sections.extend([
             f"## #{result['rank']} {result['team']}", "",
-            f"**Projected starter points per game:** {result['projected_points_per_game']:.1f}", "",
             f"![{result['team']} positional strength radar chart]({image_name})", "",
         ])
-        if result.get("commentary"):
+        if result.get("full_overview"):
             sections.extend([
                 f"**Biggest Reach:** {pick_summary(result['reach'])}", "",
                 f"**Biggest Value:** {pick_summary(result['value'])}", "",
@@ -829,12 +998,19 @@ def render_report(*, league, results):
             concerns = result.get("availability_concerns") or []
             concern_summary = "; ".join(concerns) if concerns else "None currently flagged by Sleeper"
             sections.extend([
-                "### Human analysis notes", "",
+                "### Roster analysis", "",
                 f"- **Position-group rankings:** {position_rank_summary(result)}", "",
                 f"- **Biggest Reach:** {pick_summary(result['reach'])}", "",
                 f"- **Biggest Value:** {pick_summary(result['value'])}", "",
                 f"- **Injury/suspension monitor:** {concern_summary}", "",
+                result["commentary"], "",
             ])
+    sections.extend([
+        "## Projected Standings", "",
+        f"Based on {int(standings.attrs.get('simulations', 100000)):,} schedule simulations using bye-adjusted "
+        "KTC starting-lineup value; K and D/ST are excluded.", "",
+        standings_markdown(standings), "",
+    ])
     return "\n".join(sections)
 
 
@@ -869,12 +1045,9 @@ def parse_args(argv=None):
     load_dotenv(LOCAL_ENV_FILE)
     parser = argparse.ArgumentParser(description="Generate a Sleeper post-draft rankings report.")
     parser.add_argument("league_id", help="Sleeper league ID")
-    parser.add_argument("--output", type=Path, help="Output directory (defaults to the website content directory)")
-    parser.add_argument("--projections", type=Path, help="Reuse an existing ffanalytics projection CSV")
-    parser.add_argument("--refresh-projections", action="store_true", help="Refresh cached ffanalytics projections")
+    parser.add_argument("--output", type=Path, help="Exact output directory (default: reports/YEAR/LEAGUE[_ai])")
     parser.add_argument("--dummy-draft", type=Path, help="Use draft picks from a dummy draft JSON file")
-    parser.add_argument("--rscript", default="Rscript", help="Rscript executable")
-    parser.add_argument("--ai-commentary", action="store_true", help="Add OpenAI-generated commentary for each team")
+    parser.add_argument("--ai-commentary", action="store_true", help="Use full AI overviews instead of concise AI bullets")
     parser.add_argument("--ai-model", default=os.getenv("OPENAI_MODEL", DEFAULT_AI_MODEL), help="OpenAI model used for commentary")
     parser.add_argument(
         "--ai-reasoning-effort",
@@ -883,7 +1056,18 @@ def parse_args(argv=None):
         help="OpenAI reasoning effort used for commentary",
     )
     parser.add_argument("--ai-workers", type=int, default=int(os.getenv("OPENAI_AI_WORKERS", "4")), help="Concurrent AI commentary requests")
+    parser.add_argument("--simulations", type=int, default=100000, help="Projected-standings simulations")
+    parser.add_argument("--simulation-seed", type=int, default=2026, help="Projected-standings random seed")
     return parser.parse_args(argv)
+
+
+def safe_directory_name(value):
+    cleaned = re.sub(r"[\\/:*?\"<>|]+", "-", str(value)).strip(" .")
+    return cleaned or "league"
+
+
+def report_directory_name(league_name, full_overview):
+    return safe_directory_name(league_name) + ("_ai" if full_overview else "")
 
 
 def run(args):
@@ -905,28 +1089,16 @@ def run(args):
     users = {str(user["user_id"]): user for user in api_get(f"/league/{args.league_id}/users")}
     player_catalog = None if args.dummy_draft else api_get("/players/nfl")
     season = int(league["season"])
-    projection_path = args.projections
-    if projection_path is None:
-        projection_path = get_projection_path(
-            season=season, scoring_settings=league.get("scoring_settings", {}),
-            rscript=args.rscript, refresh=getattr(args, "refresh_projections", False),
-        )
-    base = load_ffanalytics(projection_path)
+    ktc_values, ktc_settings = fetch_ktc_rankings(league)
+    base = ktc_player_frame(ktc_values)
     if dummy is not None and not picks:
         picks = generate_dummy_picks(
             base, teams=int(dummy.get("teams", len(rosters))),
             rounds=int(dummy.get("rounds", len(league["roster_positions"]))),
             seed=int(dummy.get("seed", 2026)),
         )
-    supplemental = combine_supplemental_projections(
-        fetch_cbs_position("K", season), fetch_cbs_position("DST", season),
-        fetch_fantasypros_position("K"), fetch_fantasypros_position("DST"),
-    )
     adp, adp_settings = fetch_fantasypros_adp(league, len(rosters))
-    ktc_values, ktc_settings = fetch_ktc_rankings(league)
-    projection_frame = add_supplemental_vor_and_rerank(base, supplemental)
-    projection_frame = add_adp_to_projections(projection_frame, adp)
-    projections = projection_index(add_ktc_values(projection_frame, ktc_values))
+    projections = projection_index(add_adp_to_projections(base, adp))
     results, unmatched = build_team_results(
         league=league, rosters=rosters, users=users, picks=picks, projections=projections,
         player_catalog=player_catalog,
@@ -935,25 +1107,37 @@ def run(args):
     for result in results:
         result["adp_settings"] = adp_settings
         result["ktc_settings"] = ktc_settings
-    if args.ai_commentary:
-        generate_ai_commentary(
-            league=league, results=results, api_key=os.getenv("OPENAI_API_KEY"), model=args.ai_model,
-            workers=getattr(args, "ai_workers", 4),
-            reasoning_effort=getattr(args, "ai_reasoning_effort", DEFAULT_AI_REASONING_EFFORT),
-        )
+    settings = league.get("settings") or {}
+    regular_season_weeks = int(settings.get("playoff_week_start", 15)) - 1
+    schedule = fetch_league_schedule(args.league_id, regular_season_weeks)
+    byes = fetch_nfl_byes(season, regular_season_weeks)
+    standings = simulate_projected_standings(
+        results=results, roster_positions=league["roster_positions"], schedule=schedule,
+        bye_teams=byes, playoff_teams=int(settings.get("playoff_teams", 6)),
+        league_median=bool(int(settings.get("league_average_match", 0) or 0)),
+        simulations=args.simulations, seed=args.simulation_seed,
+    )
+    generate_ai_commentary(
+        league=league, results=results, api_key=os.getenv("OPENAI_API_KEY"), model=args.ai_model,
+        workers=getattr(args, "ai_workers", 4), full_overview=args.ai_commentary,
+        reasoning_effort=getattr(args, "ai_reasoning_effort", DEFAULT_AI_REASONING_EFFORT),
+    )
+    for result in results:
+        result["full_overview"] = args.ai_commentary
+    report_name = report_directory_name(league["name"], args.ai_commentary)
     output_dir = (
-        args.output or Path(__file__).resolve().parent / "reports" / str(season)
+        args.output or Path(__file__).resolve().parent / "reports" / str(season) / report_name
     ).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     for result in results:
         render_radar(result, output_dir / f"team-{result['roster_id']}-radar.png")
-    markdown_content = render_report(league=league, results=results)
+    markdown_content = render_report(league=league, results=results, standings=standings)
     write_report_atomic(output_dir / "index.md", markdown_content)
     render_report_html(
         markdown_content=markdown_content, league=league, output_path=output_dir / "index.html",
     )
     if unmatched:
-        print(f"Warning: {len(unmatched)} drafted player(s) had no projection: {', '.join(unmatched)}", file=sys.stderr)
+        print(f"Warning: {len(unmatched)} drafted player(s) had no KTC value: {', '.join(unmatched)}", file=sys.stderr)
     print(f"Report written to {output_dir / 'index.md'}")
     return output_dir / "index.md"
 
