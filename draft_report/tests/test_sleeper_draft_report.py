@@ -447,7 +447,7 @@ def test_report_contains_only_structured_rankings_and_statistics():
     assert "Risky Player (WR): Questionable — Knee" in content
     assert "- Strong quarterback room." in content
     assert "## Projected Standings" in content
-    assert "| 1 | Champions | 10.2 | 85.5% |" in content
+    assert "|      1 | Champions" in content
 
 
 def test_report_html_wraps_markdown_and_writes_site_styles(tmp_path):
@@ -462,6 +462,31 @@ def test_report_html_wraps_markdown_and_writes_site_styles(tmp_path):
     assert "2026 Post-Draft Rankings" in html
     assert "<h2>#1 Team</h2>" in html
     assert (tmp_path / "assets/site.css").exists()
+
+
+def test_report_html_renders_projected_standings_as_a_table(tmp_path):
+    output = tmp_path / "index.html"
+    standings = pd.DataFrame([{
+        "Rank": 1, "Team": "Champions", "Projected Wins": 10.25, "Playoff Probability": 85.5,
+    }])
+    item = {
+        "rank": 1, "roster_id": 7, "team": "Champions", "reach": None, "value": None,
+        "position_ranks": {"QB": 1}, "availability_concerns": [],
+        "commentary": "- Strong roster.", "full_overview": False,
+    }
+    markdown_content = render_report(
+        league={"season": "2026", "name": "League"}, results=[item], standings=standings,
+    )
+
+    render_report_html(
+        markdown_content=markdown_content,
+        league={"season": "2026", "name": "League"}, output_path=output,
+    )
+
+    html = output.read_text()
+    assert '<table class="rankings-table">' in html
+    assert "Playoff Probability</th>" in html
+    assert "85.5%</td>" in html
 
 
 def test_league_context_distinguishes_best_ball_and_ppr():

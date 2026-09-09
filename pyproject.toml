@@ -16,6 +16,7 @@ dependencies = [
   "pandas>=2.2,<3",
   "python-dotenv>=1,<2",
   "requests>=2.31,<3",
+  "tabulate>=0.9,<1",
   "urllib3>=1.26,<2",
 ]
 
@@ -30,7 +31,6 @@ espn = [
   "langchain-core>=0.3,<1",
   "langchain-openai>=0.3,<1",
   "scikit-learn>=1.4,<2",
-  "tabulate>=0.9,<1",
 ]
 dev = [
   "pytest>=8,<9",
@@ -43,7 +43,6 @@ all = [
   "Markdown>=3.8,<4",
   "matplotlib>=3.8,<4",
   "scikit-learn>=1.4,<2",
-  "tabulate>=0.9,<1",
 ]
 
 [project.scripts]

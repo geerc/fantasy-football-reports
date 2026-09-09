@@ -23,6 +23,7 @@ import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from openai import OpenAI, OpenAIError
+from tabulate import tabulate
 
 try:
     from .report import write_report_atomic
@@ -968,13 +969,11 @@ def generate_ai_commentary(
             print(f"Generated AI commentary for {future.result()}")
 
 def standings_markdown(standings):
-    header = ["| Rank | Team | Projected Wins | Playoff Probability |", "|---:|---|---:|---:|"]
-    rows = [
-        f"| {int(row['Rank'])} | {row['Team']} | {row['Projected Wins']:.1f} | "
-        f"{row['Playoff Probability']:.1f}% |"
-        for _, row in standings.iterrows()
-    ]
-    return "\n".join(header + rows)
+    display = standings.copy()
+    display["Rank"] = display["Rank"].astype(int)
+    display["Projected Wins"] = display["Projected Wins"].map(lambda value: f"{value:.1f}")
+    display["Playoff Probability"] = display["Playoff Probability"].map(lambda value: f"{value:.1f}%")
+    return tabulate(display, headers="keys", tablefmt="pipe", showindex=False)
 
 
 def render_report(*, league, results, standings):
@@ -1019,7 +1018,8 @@ def render_report_html(*, markdown_content, league, output_path):
     from sleeper_rankings.render import CSS
 
     body = re.sub(r"^\+\+\+\n.*?\n\+\+\+\n", "", markdown_content, count=1, flags=re.DOTALL)
-    report_html = markdown.markdown(body, extensions=["footnotes"])
+    report_html = markdown.markdown(body, extensions=["footnotes", "tables"])
+    report_html = report_html.replace("<table>", '<table class="rankings-table">')
     title = f"{league['season']} Post-Draft Rankings"
     page = f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
