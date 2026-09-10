@@ -17,14 +17,25 @@ def entry_path(content, league_id, season, week):
 
 
 def with_previous(current, content, league_id, season, week):
-    if week > 1:
+    if week == 1:
+        previous = (
+            content.parent
+            / "draft-reports"
+            / str(league_id)
+            / str(season)
+            / "post-draft"
+            / "rankings.json"
+        )
+    else:
         previous = entry_path(content, league_id, season, week - 1) / "rankings.json"
-        if previous.exists():
-            frame = pd.DataFrame(json.loads(previous.read_text()))
-            frame.index = range(1, len(frame) + 1)
-            return add_weekly_change(current, frame)
+    if previous.exists():
+        frame = pd.DataFrame(json.loads(previous.read_text()))
+        if "rank" in frame.columns:
+            frame = frame.sort_values("rank")
+        frame.index = range(1, len(frame) + 1)
+        return add_weekly_change(current, frame)
     result = current.copy()
-    result["Weekly Change"] = "—" if week == 1 else "No prior snapshot"
+    result["Weekly Change"] = "No draft snapshot" if week == 1 else "No prior snapshot"
     return result
 
 

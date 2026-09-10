@@ -1133,6 +1133,11 @@ def run(args):
     render_report_html(
         markdown_content=markdown_content, league=league, output_path=output_dir / "index.html",
     )
+    draft_rankings = [
+        {"rank": int(result["rank"]), "roster_id": int(result["roster_id"]), "Team": result["team"]}
+        for result in sorted(results, key=lambda item: int(item["rank"]))
+    ]
+    write_report_atomic(output_dir / "rankings.json", json.dumps(draft_rankings, indent=2) + "\n")
     if unmatched:
         print(f"Warning: {len(unmatched)} drafted player(s) had no KTC value: {', '.join(unmatched)}", file=sys.stderr)
     print(f"Report written to {output_dir / 'index.md'}")

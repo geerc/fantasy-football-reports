@@ -16,6 +16,28 @@ def test_saved_rank_not_recomputed_and_missing_history(tmp_path):
     assert with_previous(current, tmp_path, "123", "2026", 2)["Weekly Change"].tolist() == ["↑ 1", "↓ 1"]
 
 
+def test_week_one_uses_post_draft_ranking_snapshot(tmp_path):
+    content = tmp_path / "content" / "reports"
+    current = pd.DataFrame(
+        [{"roster_id": 2, "Team": "Renamed", "Power Score": 90}, {"roster_id": 1, "Team": "A", "Power Score": 80}],
+        index=[1, 2],
+    )
+    draft = content.parent / "draft-reports" / "123" / "2026" / "post-draft"
+    draft.mkdir(parents=True)
+    (draft / "rankings.json").write_text(json.dumps([
+        {"rank": 1, "roster_id": 1, "Team": "A"},
+        {"rank": 2, "roster_id": 2, "Team": "Old name"},
+    ]))
+
+    assert with_previous(current, content, "123", "2026", 1)["Weekly Change"].tolist() == ["↑ 1", "↓ 1"]
+
+
+def test_week_one_labels_missing_draft_snapshot(tmp_path):
+    current = pd.DataFrame([{"roster_id": 1, "Team": "A"}], index=[1])
+    content = tmp_path / "content" / "reports"
+    assert with_previous(current, content, "123", "2026", 1)["Weekly Change"].tolist() == ["No draft snapshot"]
+
+
 def test_archive_preserves_both_weeks_without_network(tmp_path):
     content, output = tmp_path / "content", tmp_path / "dist"
     frame = pd.DataFrame([{"Team": "Alpha", "Power Score": 50}], index=[1])
