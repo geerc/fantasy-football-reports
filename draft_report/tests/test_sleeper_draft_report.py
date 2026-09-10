@@ -475,14 +475,19 @@ def test_report_html_wraps_markdown_and_writes_site_styles(tmp_path):
     output = tmp_path / "index.html"
 
     render_report_html(
-        markdown_content="+++\ntitle = \"Draft\"\n+++\n\n# Draft\n\n## #1 Team\n\nAnalysis.",
+        markdown_content=(
+            "+++\ntitle = \"Draft\"\n+++\n\n# Draft\n\n"
+            "# *Cellar Dwellars*\n\n## #1 Team\n\nAnalysis."
+        ),
         league={"season": "2026", "name": "Test League"}, output_path=output,
     )
 
     html = output.read_text()
     assert "2026 Post-Draft Rankings" in html
+    assert "<h1><em>Cellar Dwellars</em></h1>" in html
     assert "<h2>#1 Team</h2>" in html
-    assert (tmp_path / "assets/site.css").exists()
+    css = (tmp_path / "assets/site.css").read_text()
+    assert ".report-prose>h1:first-of-type{display:none}" in css
 
 
 def test_report_html_renders_projected_standings_as_a_table(tmp_path):
