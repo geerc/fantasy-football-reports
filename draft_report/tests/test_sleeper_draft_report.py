@@ -100,6 +100,27 @@ def test_optimize_lineup_maximizes_legal_flex_lineup():
 
     assert score == 1200
     assert {item.name for _, item in starters} == {"QB", "RB1", "WR1", "WR2", "TE"}
+    assert ("RB", "RB1") in [(slot, item.name) for slot, item in starters]
+    assert ("FLEX", "WR2") in [(slot, item.name) for slot, item in starters]
+
+
+def test_optimize_lineup_treats_superflex_as_second_qb_and_fills_native_slots_first():
+    players = [
+        player("QB1", "QB", 9000), player("QB2", "QB", 7000),
+        player("RB1", "RB", 9941), player("RB2", "RB", 6208),
+        player("RB3", "RB", 6026),
+    ]
+
+    score, starters = optimize_lineup(
+        players, ["QB", "RB", "RB", "FLEX", "SUPER_FLEX"], score_attribute="ktc_value",
+    )
+
+    assignments = [(slot, item.name) for slot, item in starters]
+    assert assignments == [
+        ("QB", "QB1"), ("RB", "RB1"), ("RB", "RB2"),
+        ("QB", "QB2"), ("FLEX", "RB3"),
+    ]
+    assert score == 38175
 
 
 def test_optimize_lineup_rejects_incomplete_roster():
@@ -607,13 +628,13 @@ def test_report_includes_commentary_only_when_present():
 
 def test_simulation_excludes_kicker_and_defense_and_replaces_bye_players():
     slots = simulation_slots(["QB", "RB", "SUPER_FLEX", "K", "DEF", "BN"])
-    assert slots == ["QB", "RB", "SUPER_FLEX"]
+    assert slots == ["QB", "RB", "QB"]
     roster = [
         PlayerProjection("QB One", "QB", "BUF", 0, 0, 1, ktc_value=9000),
         PlayerProjection("QB Two", "QB", "KC", 0, 0, 2, ktc_value=8000),
         PlayerProjection("RB One", "RB", "DAL", 0, 0, 3, ktc_value=7000),
     ]
-    assert weekly_lineup_value(roster, slots, {"BUF"}, {"QB": 6000, "RB": 5000, "SUPER_FLEX": 6000}) == 21000
+    assert weekly_lineup_value(roster, slots, {"BUF"}, {"QB": 6000, "RB": 5000}) == 21000
 
 
 def test_projected_standings_use_schedule_and_return_playoff_odds():

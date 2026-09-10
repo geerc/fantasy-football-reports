@@ -461,27 +461,34 @@ def eligible(player_position, slot):
     return player_position == slot or player_position in FLEX_ELIGIBILITY.get(slot, set())
 
 
-def optimize_lineup(players, roster_positions, score_attribute="points"):
-    slots = [slot for slot in roster_positions if slot not in {"BN", "IR", "TAXI"}]
-    states = {0: (0.0, [])}
-    for player in players:
-        player_score = float(getattr(player, score_attribute))
-        if not math.isfinite(player_score):
+def starter_slots(roster_positions, *, exclude=()):
+    excluded = {normalize_position(position) for position in exclude}
+    slots = []
+    for position in roster_positions:
+        slot = normalize_position(position)
+        if slot in {"BN", "IR", "TAXI", *excluded}:
             continue
-        next_states = dict(states)
-        for mask, (score, selected) in states.items():
-            for slot_index, slot in enumerate(slots):
-                bit = 1 << slot_index
-                if not mask & bit and eligible(player.position, slot):
-                    candidate = (score + player_score, selected + [(slot, player)])
-                    if candidate[0] > next_states.get(mask | bit, (-math.inf, []))[0]:
-                        next_states[mask | bit] = candidate
-        states = next_states
-    target = (1 << len(slots)) - 1
-    if target not in states:
-        missing = len(slots) - max((bin(mask).count("1") for mask in states), default=0)
-        raise ValueError(f"Unable to fill {missing} starting lineup slot(s) from projected drafted players")
-    return states[target]
+        slots.append("QB" if slot == "SUPER_FLEX" else slot)
+    native = [slot for slot in slots if slot not in FLEX_ELIGIBILITY]
+    flexible = [slot for slot in slots if slot in FLEX_ELIGIBILITY]
+    return native + flexible
+
+
+def optimize_lineup(players, roster_positions, score_attribute="points"):
+    slots = starter_slots(roster_positions)
+    available = [
+        player for player in players
+        if math.isfinite(float(getattr(player, score_attribute)))
+    ]
+    selected = []
+    for slot in slots:
+        candidates = [player for player in available if eligible(player.position, slot)]
+        if not candidates:
+            raise ValueError(f"Unable to fill starting lineup slot {slot} from valued drafted players")
+        player = max(candidates, key=lambda item: float(getattr(item, score_attribute)))
+        selected.append((slot, player))
+        available.remove(player)
+    return sum(float(getattr(player, score_attribute)) for _, player in selected), selected
 
 
 def team_name(roster_id, rosters, users):
@@ -585,8 +592,6 @@ def build_team_results(*, league, rosters, users, picks, projections, player_cat
         position_totals = {position: 0.0 for position in RADAR_POSITIONS}
         for slot, player in starters:
             slot = normalize_position(slot)
-            if slot == "SUPER_FLEX":
-                slot = "QB"
             if slot in position_totals:
                 position_totals[slot] += player.ktc_value
         deltas = [
@@ -642,32 +647,22 @@ def radar_positions_for_league(roster_positions):
 
 
 def simulation_slots(roster_positions):
-    return [
-        normalize_position(slot)
-        for slot in roster_positions
-        if normalize_position(slot) not in {"BN", "IR", "TAXI", *SIMULATION_EXCLUDED_POSITIONS}
-    ]
+    return starter_slots(roster_positions, exclude=SIMULATION_EXCLUDED_POSITIONS)
 
 
 def partial_lineup(players, slots):
-    states = {0: (0.0, [])}
-    for player in players:
-        if not math.isfinite(player.ktc_value):
+    available = [player for player in players if math.isfinite(player.ktc_value)]
+    selected = []
+    missing = []
+    for slot_index, slot in enumerate(slots):
+        candidates = [player for player in available if eligible(player.position, slot)]
+        if not candidates:
+            missing.append(slot)
             continue
-        next_states = dict(states)
-        for mask, (score, selected) in states.items():
-            for slot_index, slot in enumerate(slots):
-                bit = 1 << slot_index
-                if not mask & bit and eligible(player.position, slot):
-                    candidate = (score + player.ktc_value, selected + [(slot_index, slot, player)])
-                    if candidate[0] > next_states.get(mask | bit, (-math.inf, []))[0]:
-                        next_states[mask | bit] = candidate
-        states = next_states
-    mask, (score, selected) = max(
-        states.items(), key=lambda item: (bin(item[0]).count("1"), item[1][0]),
-    )
-    missing = [slot for index, slot in enumerate(slots) if not mask & (1 << index)]
-    return score, selected, missing
+        player = max(candidates, key=lambda item: item.ktc_value)
+        selected.append((slot_index, slot, player))
+        available.remove(player)
+    return sum(player.ktc_value for _, _, player in selected), selected, missing
 
 
 def replacement_values(results, slots):
