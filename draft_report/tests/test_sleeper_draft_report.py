@@ -488,6 +488,8 @@ def test_report_html_wraps_markdown_and_writes_site_styles(tmp_path):
     assert "<h2>#1 Team</h2>" in html
     css = (tmp_path / "assets/site.css").read_text()
     assert ".report-prose>h1:first-of-type{display:none}" in css
+    assert ".report-prose>h1:not(:first-of-type),.report-prose>h2{" in css
+    assert ".rankings-table th:not(:nth-child(2))" in css
 
 
 def test_report_html_renders_projected_standings_as_a_table(tmp_path):

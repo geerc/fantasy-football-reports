@@ -1030,7 +1030,8 @@ def render_report_html(*, markdown_content, league, output_path):
 
 DRAFT_REPORT_CSS = """
 .report-prose{padding:38px 0 72px}.report-prose>h1:first-of-type{display:none}
-.report-prose>h2{margin-top:50px;border-top:1px solid var(--line);padding-top:32px}
+.report-prose>h1:not(:first-of-type),.report-prose>h2{margin-top:50px;border-top:1px solid var(--line);padding-top:32px}
+.report-prose .rankings-table th:not(:nth-child(2)),.report-prose .rankings-table td:not(:nth-child(2)){text-align:center!important}
 .report-prose img{width:min(330px,100%);height:auto;display:block;margin:18px auto}
 .report-prose .footnote{font-size:.82rem;color:var(--muted)}
 """
