@@ -484,6 +484,7 @@ def test_report_html_wraps_markdown_and_writes_site_styles(tmp_path):
 
     html = output.read_text()
     assert "2026 Post-Draft Rankings" in html
+    assert '<a class="report-home" href="/">← Home</a>' in html
     assert "<h1><em>Cellar Dwellars</em></h1>" in html
     assert "<h2>#1 Team</h2>" in html
     css = (tmp_path / "assets/site.css").read_text()

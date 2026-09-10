@@ -1020,7 +1020,7 @@ def render_report_html(*, markdown_content, league, output_path):
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="Post-draft fantasy football rankings for {league['name']}">
 <title>{title}</title><link rel="stylesheet" href="assets/site.css"></head>
-<body><header class="hero"><div class="wrap"><p class="eyebrow">{league['season']} · Draft report</p><h1>{title}</h1><p>{league['name']} · Preseason roster analysis</p></div></header>
+<body><header class="hero"><div class="wrap"><a class="report-home" href="/">← Home</a><p class="eyebrow">{league['season']} · Draft report</p><h1>{title}</h1><p>{league['name']} · Preseason roster analysis</p></div></header>
     <main class="wrap report-prose">{report_html}</main></body></html>'''
     write_report_atomic(output_path, page)
     assets = output_path.parent / "assets"
@@ -1029,6 +1029,7 @@ def render_report_html(*, markdown_content, league, output_path):
 
 
 DRAFT_REPORT_CSS = """
+.report-home{display:inline-block;margin-bottom:28px;color:#fff;text-decoration:none;font-weight:800}.report-home:hover,.report-home:focus{text-decoration:underline;text-underline-offset:4px}
 .report-prose{padding:38px 0 72px}.report-prose>h1:first-of-type{display:none}
 .report-prose>h1:not(:first-of-type),.report-prose>h2{margin-top:50px;border-top:1px solid var(--line);padding-top:32px}
 .report-prose .rankings-table th:not(:nth-child(2)),.report-prose .rankings-table td:not(:nth-child(2)){text-align:center!important}
