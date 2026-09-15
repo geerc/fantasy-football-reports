@@ -46,7 +46,9 @@ def test_archive_preserves_both_weeks_without_network(tmp_path):
         render_site(output=path, title="Test", league_name="Test", season="2026", week=week, rankings=frame, summary=None, playoffs=None, standings=frame, luck=frame)
         (path / "report.json").write_text(json.dumps({"season": "2026", "week": week}))
     index = build_archive(content, output, {"title": "Test"})
-    assert "Week 1" in index.read_text() and "Week 2" in index.read_text()
+    homepage = index.read_text()
+    assert "Week 1" in homepage and "Week 2" in homepage
+    assert homepage.index("Weekly power rankings") < homepage.index("Draft reports")
     assert (output / "reports/123/2026/week-01/index.html").exists()
     assert (output / "reports/123/2026/week-02/assets/site.css").exists()
 
@@ -67,6 +69,7 @@ def test_archive_homepage_includes_draft_report_and_empty_weekly_state(tmp_path)
     assert "Draft reports" in homepage
     assert "Weekly rankings begin after Week 1" in homepage
     assert "2026 Post-Draft Rankings" in homepage
+    assert homepage.index("Draft reports") < homepage.index("Weekly power rankings")
     assert (output / "draft-reports/123/2026/post-draft/index.html").exists()
     assert (output / "draft-reports/123/2026/post-draft/assets/chart.png").exists()
 

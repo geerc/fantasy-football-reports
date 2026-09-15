@@ -74,16 +74,18 @@ def build_archive(content: Path, output: Path, config: dict):
     (output / "assets/site.css").write_text(CSS + ARCHIVE_CSS)
     draft_html = "".join(draft_entries) or '<p class="note">No draft reports are available yet.</p>'
     weekly_html = "".join(weekly_entries) or '<p class="note">Weekly rankings begin after Week 1.</p>'
+    draft_section = f'''<section><div class="section-title"><div><p class="eyebrow">Preseason</p><h2>Draft reports</h2></div></div>
+<div class="report-grid">{draft_html}</div></section>'''
+    weekly_section = f'''<section><div class="section-title"><div><p class="eyebrow">In season</p><h2>Weekly power rankings</h2></div></div>
+<div class="report-grid">{weekly_html}</div></section>'''
+    sections = weekly_section + draft_section if weekly_entries else draft_section + weekly_section
     (output / "index.html").write_text(f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="Fantasy football reports for {title}"><title>{title}</title>
 <link rel="stylesheet" href="assets/site.css"></head><body>
 <header class="hero"><div class="wrap"><p class="eyebrow">League report center</p><h1>{title}</h1>
 <p>Draft analysis, weekly power rankings, projected standings, and season-long league intelligence.</p></div></header>
-<main class="wrap archive"><section><div class="section-title"><div><p class="eyebrow">Preseason</p><h2>Draft reports</h2></div></div>
-<div class="report-grid">{draft_html}</div></section>
-<section><div class="section-title"><div><p class="eyebrow">In season</p><h2>Weekly power rankings</h2></div></div>
-<div class="report-grid">{weekly_html}</div></section></main></body></html>''')
+<main class="wrap archive">{sections}</main></body></html>''')
     return output / "index.html"
 
 
