@@ -29,6 +29,16 @@ def test_archive_preserves_both_weeks_without_network(tmp_path):
     assert (output / "reports/123/2026/week-02/assets/site.css").exists()
 
 
+def test_report_copies_configured_header_image(tmp_path):
+    frame = pd.DataFrame([{"Team": "Alpha", "Power Score": 50}], index=[1])
+    source = tmp_path / "header.jpg"
+    source.write_bytes(b"image")
+    output = tmp_path / "report"
+    page = render_site(output=output, title="Test", league_name="Test", season="2026", week=1, rankings=frame, summary=None, playoffs=None, standings=frame, luck=frame, header_image=source)
+    assert 'class="hero has-image"' in page.read_text()
+    assert (output / "assets/header.jpg").read_bytes() == b"image"
+
+
 def test_invalid_archive_keys_rejected(tmp_path):
     with pytest.raises(ValueError):
         entry_path(tmp_path, "../bad", "2026", 1)
