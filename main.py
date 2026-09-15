@@ -76,8 +76,8 @@ def run(args):
 
     expected = generate_expected_standings(league, rankings, week, regular_season_weeks)
     playoffs = None
-    if 5 <= week < regular_season_weeks:
-        playoffs = generate_playoff_probabilities(league, week, regular_season_weeks, playoff_teams, config.simulations, config.random_seed)
+    if 6 <= week < regular_season_weeks:
+        playoffs = generate_playoff_probabilities(league, rankings, week, regular_season_weeks, playoff_teams, config.simulations, config.random_seed)
     luck = generate_luck_index(league, week)
 
     summary = None

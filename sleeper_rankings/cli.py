@@ -63,7 +63,7 @@ def run(args: argparse.Namespace) -> Path:
     luck = luck_index(data, week)
     playoffs = None
     regular_weeks = int(data.league["settings"].get("playoff_week_start", 15)) - 1
-    if 5 <= week < regular_weeks:
+    if 6 <= week < regular_weeks:
         playoffs = playoff_probabilities(data, rankings, week, int(config.get("simulations", 100000)), config.get("random_seed"))
     ai_enabled = bool(config.get("ai_recap", False)) and not args.skip_ai
     summary = generate_summary(data, week, os.getenv("OPENAI_MODEL", "gpt-5-mini")) if ai_enabled else None

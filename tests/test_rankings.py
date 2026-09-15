@@ -60,7 +60,8 @@ def test_weekly_change_supports_new_and_renamed_teams():
     result = add_weekly_change(current, previous)
 
     assert result.loc[1, "Weekly Change"] == "NEW"
-    assert result.loc[2, "Weekly Change"] == ""
+    assert "#111827" in result.loc[2, "Weekly Change"]
+    assert "—" in result.loc[2, "Weekly Change"]
 
 
 def test_expected_standings_use_dynamic_regular_season_length():
@@ -78,17 +79,35 @@ def test_expected_standings_use_dynamic_regular_season_length():
 
 
 def test_playoff_simulation_is_seeded_dynamic_and_preserves_total_probability(matchup):
-    teams = [FakeTeam(name, wins=index, scores=[100 + index]) for index, name in enumerate(["Renamed A", "B", "C", "D"])]
+    teams = [FakeTeam(name, wins=0, scores=[100 + index]) for index, name in enumerate(["Renamed A", "B", "C", "D"])]
     scoreboards = {
         3: [matchup(teams[0], teams[1]), matchup(teams[2], teams[3])],
         4: [matchup(teams[0], teams[2]), matchup(teams[1], teams[3])],
     }
     league = FakeLeague(teams, scoreboards=scoreboards)
+    rankings = pd.DataFrame(
+        {"Team": ["Renamed A", "B", "C", "D"], "Power Score": [80, 60, 40, 20]}
+    )
 
-    first = generate_playoff_probabilities(league, week=2, regular_season_weeks=4, playoff_teams=2, simulations=500, seed=123)
-    second = generate_playoff_probabilities(league, week=2, regular_season_weeks=4, playoff_teams=2, simulations=500, seed=123)
+    first = generate_playoff_probabilities(league, rankings, week=2, regular_season_weeks=4, playoff_teams=2, simulations=500, seed=123)
+    second = generate_playoff_probabilities(league, rankings, week=2, regular_season_weeks=4, playoff_teams=2, simulations=500, seed=123)
 
     pd.testing.assert_frame_equal(first, second)
     total_probability = first["Playoffs"].str.rstrip("%").astype(float).sum()
     assert total_probability == pytest.approx(200, abs=0.05)
     assert set(first["Team"]) == {"Renamed A", "B", "C", "D"}
+
+
+def test_playoff_simulation_weights_matchups_by_power_score(matchup):
+    strong = FakeTeam("Strong", scores=[100])
+    weak = FakeTeam("Weak", scores=[100])
+    league = FakeLeague([strong, weak], scoreboards={2: [matchup(strong, weak)]})
+    rankings = pd.DataFrame({"Team": ["Strong", "Weak"], "Power Score": [90, 10]})
+
+    result = generate_playoff_probabilities(
+        league, rankings, week=1, regular_season_weeks=2, playoff_teams=1, simulations=5000, seed=123
+    )
+
+    probabilities = result.set_index("Team")["Playoffs"].str.rstrip("%").astype(float)
+    assert probabilities["Strong"] > 85
+    assert probabilities["Weak"] < 15

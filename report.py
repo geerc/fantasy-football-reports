@@ -5,18 +5,19 @@ from datetime import date
 from tabulate import tabulate
 
 
-def _table(frame, centered_columns=()):
-    alignments = ("right",) + tuple("center" if column in centered_columns else None for column in frame.columns)
+def _table(frame):
+    """Render team names left-aligned and every data field centered."""
+    alignments = ("center",) + tuple("left" if column == "Team" else "center" for column in frame.columns)
     return tabulate(frame, headers="keys", tablefmt="pipe", showindex=True, colalign=alignments)
 
 
 def render_report(*, year, week, rankings, summary, playoff_probabilities, expected_standings, luck_index):
-    sections = ["+++", f'title = "Week {week} {year} Report"', f'date = "{date.today()}"', "draft = false", "hideSummary = true", "hideMeta = true", "+++", "", "# POWER RANKINGS", "", _table(rankings, {"Performance Rank", "KTC Value Rank"})]
+    sections = ["+++", f'title = "Week {week} {year} Report"', f'date = "{date.today()}"', "draft = false", "hideSummary = true", "hideMeta = true", "+++", "", "# POWER RANKINGS", "", _table(rankings)]
     if summary:
         sections.extend(["", summary])
     if playoff_probabilities is not None:
-        sections.extend(["", "## Current Playoff Probabilities", "", tabulate(playoff_probabilities, headers="keys", tablefmt="pipe", showindex=True)])
-    sections.extend(["", f"## Projected Standings (as of week {week})", "", _table(expected_standings, {"Projected Wins", "Projected Losses"}), "", "## LUCK INDEX", "", _table(luck_index, {"Luck Index"}), ""])
+        sections.extend(["", "## Current Playoff Probabilities", "", _table(playoff_probabilities)])
+    sections.extend(["", f"## Projected Standings (as of week {week})", "", _table(expected_standings), "", "## LUCK INDEX", "", _table(luck_index), ""])
     return "\n".join(sections)
 
 

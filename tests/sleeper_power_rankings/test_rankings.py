@@ -1,7 +1,9 @@
 import pandas as pd
 
 from sleeper_rankings.models import LeagueData, Team
-from sleeper_rankings.rankings import add_weekly_change, performance_score, power_rankings
+import pytest
+
+from sleeper_rankings.rankings import add_weekly_change, performance_score, playoff_probabilities, power_rankings
 
 
 def fixture_data():
@@ -35,3 +37,24 @@ def test_weekly_change_uses_roster_id_not_mutable_team_name():
     previous = pd.DataFrame([{"Team": "Alpha", "roster_id": 1}, {"Team": "Old name", "roster_id": 2}], index=[1, 2])
     result = add_weekly_change(current, previous)
     assert list(result["Weekly Change"]) == ["↑ 1", "↓ 1"]
+
+
+def test_playoff_probabilities_are_seeded_and_sum_to_available_spots():
+    teams = [
+        Team(1, "a", "Alpha", "A", [], wins=2, scores=[120, 110], opponents=[2, 3, 2, 4]),
+        Team(2, "b", "Beta", "B", [], wins=1, scores=[100, 105], opponents=[1, 4, 1, 3]),
+        Team(3, "c", "Gamma", "C", [], wins=1, scores=[95, 115], opponents=[4, 1, 4, 2]),
+        Team(4, "d", "Delta", "D", [], wins=0, scores=[90, 85], opponents=[3, 2, 3, 1]),
+    ]
+    data = LeagueData({"settings": {"playoff_week_start": 5, "playoff_teams": 2}}, teams, {}, {})
+    rankings = pd.DataFrame(
+        {"roster_id": [1, 2, 3, 4], "Power Score": [80, 60, 40, 20]},
+        index=[1, 2, 3, 4],
+    )
+
+    first = playoff_probabilities(data, rankings, week=2, simulations=500, seed=123)
+    second = playoff_probabilities(data, rankings, week=2, simulations=500, seed=123)
+
+    pd.testing.assert_frame_equal(first, second)
+    total = first["Playoffs"].str.rstrip("%").astype(float).sum()
+    assert total == pytest.approx(200, abs=0.05)

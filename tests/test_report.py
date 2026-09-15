@@ -20,9 +20,9 @@ def test_report_rendering_handles_optional_sections():
     ranking_alignments = [cell.strip() for cell in separators[0].strip("|").split("|")]
     standings_alignments = [cell.strip() for cell in separators[1].strip("|").split("|")]
     luck_alignments = [cell.strip() for cell in separators[2].strip("|").split("|")]
-    assert all(value.startswith(":") and value.endswith(":") for value in ranking_alignments[3:5])
-    assert all(value.startswith(":") and value.endswith(":") for value in standings_alignments[2:4])
-    assert luck_alignments[2].startswith(":") and luck_alignments[2].endswith(":")
+    for alignments in (ranking_alignments, standings_alignments, luck_alignments):
+        assert alignments[1].startswith(":") and not alignments[1].endswith(":")
+        assert all(value.startswith(":") and value.endswith(":") for value in (alignments[:1] + alignments[2:]))
 
 
 def test_atomic_report_write_creates_parent_directory(tmp_path):

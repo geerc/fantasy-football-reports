@@ -117,10 +117,10 @@ def add_weekly_change(current: pd.DataFrame, previous: pd.DataFrame) -> pd.DataF
             return "NEW"
         change = previous_positions[team] - current_positions[team]
         if change > 0:
-            return f'**<span style="color: green;">⬆️ {change} </span>**'
+            return f'<span style="color: #15803d; font-weight: 700;">↑ {change}</span>'
         if change < 0:
-            return f'**<span style="color: red;">⬇️ {abs(change)} </span>**'
-        return ""
+            return f'<span style="color: #b91c1c; font-weight: 700;">↓ {abs(change)}</span>'
+        return '<span style="color: #111827;">—</span>'
     current.insert(2, "Weekly Change", current["Team"].map(display))
     return current
 
@@ -151,9 +151,10 @@ def generate_expected_standings(league, rankings: pd.DataFrame, week: int, regul
     return result
 
 
-def generate_playoff_probabilities(league, week: int, regular_season_weeks: int, playoff_teams: int, simulations: int, seed: Optional[int]) -> pd.DataFrame:
+def generate_playoff_probabilities(league, rankings: pd.DataFrame, week: int, regular_season_weeks: int, playoff_teams: int, simulations: int, seed: Optional[int]) -> pd.DataFrame:
     team_names = [team.team_name for team in league.teams]
     team_index = {name: index for index, name in enumerate(team_names)}
+    strength = rankings.set_index("Team")["Power Score"].to_dict()
     matchups = []
     for week_number in range(week + 1, regular_season_weeks + 1):
         for matchup in league.scoreboard(week_number):
@@ -166,7 +167,11 @@ def generate_playoff_probabilities(league, week: int, regular_season_weeks: int,
     for _ in range(simulations):
         totals = base_wins + tie_breakers
         for home, away in matchups:
-            totals[home if rng.getrandbits(1) else away] += 1
+            home_strength = strength[team_names[home]]
+            away_strength = strength[team_names[away]]
+            denominator = home_strength + away_strength
+            home_probability = 0.5 if denominator == 0 else home_strength / denominator
+            totals[home if rng.random() < home_probability else away] += 1
         order = np.argsort(totals)[::-1]
         for seed_number, index in enumerate(order[:playoff_teams]):
             seed_counts[index, seed_number] += 1
