@@ -67,7 +67,8 @@ def run(args: argparse.Namespace) -> Path:
         playoffs = playoff_probabilities(data, rankings, week, int(config.get("simulations", 100000)), config.get("random_seed"))
     ai_enabled = bool(config.get("ai_recap", False)) and not args.skip_ai
     summary = generate_summary(data, week, os.getenv("OPENAI_MODEL", "gpt-5-mini")) if ai_enabled else None
-    render_site(output=destination, title=config.get("title", f'{data.league["name"]} Power Rankings'), league_name=data.league["name"], season=data.league["season"], week=week, rankings=rankings, summary=summary, playoffs=playoffs, standings=standings, luck=luck)
+    header_image = Path(config.get("header_image", "")) if config.get("header_image") else None
+    render_site(output=destination, title=config.get("title", f'{data.league["name"]} Power Rankings'), league_name=data.league["name"], season=data.league["season"], week=week, rankings=rankings, summary=summary, playoffs=playoffs, standings=standings, luck=luck, header_image=header_image)
     (destination / "rankings.json").write_text(rankings.to_json(orient="records"))
     if not snapshot_path.exists():
         values.to_csv(snapshot_path, index=False)
