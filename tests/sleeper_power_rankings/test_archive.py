@@ -84,6 +84,15 @@ def test_report_copies_configured_header_image(tmp_path):
     assert (output / "assets/header.jpg").read_bytes() == b"image"
 
 
+def test_report_renders_safe_summary_markdown(tmp_path):
+    frame = pd.DataFrame([{"Team": "Alpha", "Power Score": 50}], index=[1])
+    page = render_site(output=tmp_path, title="Test", league_name="Test", season="2026", week=1, rankings=frame, summary="### Game of the Week\n\n- Alpha won\n\n<script>bad()</script>", playoffs=None, standings=frame, luck=frame)
+    html = page.read_text()
+    assert "<h3>Game of the Week</h3>" in html
+    assert "<li>Alpha won</li>" in html
+    assert "<script>" not in html
+
+
 def test_invalid_archive_keys_rejected(tmp_path):
     with pytest.raises(ValueError):
         entry_path(tmp_path, "../bad", "2026", 1)

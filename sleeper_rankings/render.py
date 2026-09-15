@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 
 import pandas as pd
+from markdown import markdown
 
 
 def _table(frame: pd.DataFrame, hidden: tuple[str, ...] = ()) -> str:
@@ -22,7 +23,7 @@ def render_site(*, output: Path, title: str, league_name: str, season: str, week
     if header_image is not None and header_image.is_file():
         shutil.copy2(header_image, assets / "header.jpg")
         hero_class += " has-image"
-    summary_html = f'<section class="recap"><h2>Week {week} recap</h2><div class="prose">{escape(summary).replace(chr(10), "<br>")}</div></section>' if summary else '<p class="note">AI recap omitted. Add <code>OPENAI_API_KEY</code> to enable it.</p>'
+    summary_html = f'<section class="recap"><h2>Week {week} recap</h2><div class="prose">{markdown(escape(summary))}</div></section>' if summary else '<p class="note">AI recap omitted. Add <code>OPENAI_API_KEY</code> to enable it.</p>'
     playoffs_html = f'<section><h2>Playoff probabilities</h2>{_table(playoffs)}</section>' if playoffs is not None else ""
     generated = datetime.now(timezone.utc).strftime("%B %d, %Y at %H:%M UTC")
     html = f'''<!doctype html>
