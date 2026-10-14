@@ -1,10 +1,11 @@
 import random
-import re
 from typing import Optional
 
 import numpy as np
 import pandas as pd
 from fuzzywuzzy import fuzz, process
+
+from sleeper_rankings.rankings import performance_score
 
 
 PLAYER_ALIASES = {"Marquise Brown": "Hollywood Brown"}
@@ -82,12 +83,19 @@ def generate_power_rankings(league, week: int, values_path) -> tuple[pd.DataFram
     team_values = players.groupby("Team", as_index=False)["Value"].sum().merge(counts, on="Team")
     team_values["Value"] = team_values["Value"] / team_values["size"]
 
+    if week < 1:
+        raise ValueError("Power rankings require at least one completed week")
+    incomplete = [
+        team.team_name for team in league.teams
+        if len(team.scores) < week or not np.isfinite(team.scores[:week]).all()
+    ]
+    if incomplete:
+        raise ValueError(f"Week {week} has incomplete scores for: {', '.join(incomplete)}")
+    # ESPN and Sleeper expose teams with weekly scores. Share the formula so
+    # matchup schedules, records, and margins cannot affect either ranking.
     raw = pd.DataFrame(
-        [(re.sub(r"Team\((.*?)\)", r"\1", str(team)), score) for score, team in league.power_rankings(week=week)],
+        [(team.team_name, performance_score(league, team, week)) for team in league.teams],
         columns=["Team", "Performance Score"],
-    )
-    raw["Performance Score"] = pd.to_numeric(
-        raw["Performance Score"].astype(str).str.replace(r"[$,]", "", regex=True), errors="coerce"
     )
     result = raw.merge(team_values[["Team", "Value"]], on="Team", how="left", validate="one_to_one")
     if result[["Performance Score", "Value"]].isna().any().any():

@@ -37,8 +37,8 @@ def test_generate_power_rankings_reports_missing_file(tmp_path):
 
 
 def test_generate_power_rankings_matches_alias_and_handles_equal_scores(tmp_path, fake_player):
-    alpha = FakeTeam("Alpha", roster=[fake_player("Hollywood Brown", nfl_team="KC")])
-    beta = FakeTeam("Beta", roster=[fake_player("Other Player", nfl_team="BUF")])
+    alpha = FakeTeam("Alpha", scores=[100], roster=[fake_player("Hollywood Brown", nfl_team="KC")])
+    beta = FakeTeam("Beta", scores=[100], roster=[fake_player("Other Player", nfl_team="BUF")])
     league = FakeLeague([alpha, beta], power_scores={"Alpha": 10, "Beta": 10})
     values_path = tmp_path / "values.csv"
     pd.DataFrame([
@@ -51,6 +51,40 @@ def test_generate_power_rankings_matches_alias_and_handles_equal_scores(tmp_path
     assert set(rankings["Team"]) == {"Alpha", "Beta"}
     assert rankings["Power Score"].notna().all()
     assert "Hollywood Brown" in set(players["Player Name"])
+
+
+def test_espn_rankings_ignore_head_to_head_and_library_rankings(tmp_path, fake_player):
+    teams = [
+        FakeTeam(name, scores=scores, roster=[fake_player(player)])
+        for name, player, scores in [
+            ("Alpha", "Josh Allen", [120, 130]),
+            ("Beta", "James Cook", [100, 110]),
+            ("Gamma", "Dalton Kincaid", [80, 90]),
+        ]
+    ]
+    league = FakeLeague(teams)
+    def forbidden_library_rankings(*args, **kwargs):
+        raise AssertionError("Do not use ESPN's head-to-head ranking formula")
+    league.power_rankings = forbidden_library_rankings
+    values_path = tmp_path / "values.csv"
+    pd.DataFrame([
+        {"Player Name": team.roster[0].name, "Pos": "RB", "Value": 100, "NFL_Team": "BUF"}
+        for team in teams
+    ]).to_csv(values_path, index=False)
+    before, _ = generate_power_rankings(league, 2, values_path)
+    assert list(before["Team"]) == ["Alpha", "Beta", "Gamma"]
+    assert list(before["Performance Rank"]) == [1, 2, 3]
+    for team in teams:
+        team.wins = 99
+        team.losses = 99
+        team.schedule = list(reversed(teams))
+        team.mov = [-1000, -1000]
+        team.scores.append(9999)  # Future weeks must not enter this report.
+    after, _ = generate_power_rankings(league, 2, values_path)
+    pd.testing.assert_frame_equal(before, after)
+    teams[0].scores = [120]
+    with pytest.raises(ValueError, match="incomplete scores"):
+        generate_power_rankings(league, 2, values_path)
 
 
 def test_weekly_change_supports_new_and_renamed_teams():
