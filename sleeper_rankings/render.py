@@ -7,8 +7,44 @@ import re
 import shutil
 
 import pandas as pd
+from bs4 import BeautifulSoup
+from markdown_it import MarkdownIt
 
 from .power import METHODOLOGY
+
+
+HOME_NAV = '<nav class="report-nav" aria-label="Report navigation"><a class="home-button" href="../../../../">← Home</a></nav>'
+
+
+def render_recap(summary: str) -> str:
+    """Render Markdown while treating embedded HTML as untrusted text."""
+    markdown = MarkdownIt("commonmark", {"html": False})
+    tokens = markdown.parse(summary)
+    for token in tokens:
+        if token.type in {"heading_open", "heading_close"}:
+            token.tag = "h3" if int(token.tag[1:]) <= 3 else "h4"
+    return markdown.renderer.render(tokens, markdown.options, {})
+
+
+def refresh_saved_presentation(html: str) -> str:
+    """Upgrade archived presentation without recalculating saved report data."""
+    soup = BeautifulSoup(html, "html.parser")
+    main = soup.find("main")
+    if main is not None and not soup.select_one(".report-nav"):
+        main.insert(0, BeautifulSoup(HOME_NAV, "html.parser"))
+    for prose in soup.select(".recap .prose"):
+        if prose.get("data-format") == "markdown":
+            continue
+        # The old renderer escaped Markdown and represented newlines as <br>.
+        if any(prose.find(tag) for tag in ("p", "h3", "ul", "ol")):
+            continue
+        for br in prose.find_all("br"):
+            br.replace_with("\n")
+        rendered = render_recap(prose.get_text())
+        prose.clear()
+        prose.append(BeautifulSoup(rendered, "html.parser"))
+        prose["data-format"] = "markdown"
+    return str(soup)
 
 
 def _table(frame: pd.DataFrame, hidden: tuple[str, ...] = ()) -> str:
@@ -29,7 +65,7 @@ def render_site(*, output: Path, title: str, league_name: str, season: str, week
     if header_image is not None and header_image.is_file():
         shutil.copy2(header_image, assets / "header.jpg")
         hero_class += " has-image"
-    summary_html = f'<section class="recap"><h2>Week {week} recap</h2><div class="prose">{escape(summary).replace(chr(10), "<br>")}</div></section>' if summary else '<p class="note">AI recap omitted. Add <code>OPENAI_API_KEY</code> to enable it.</p>'
+    summary_html = f'<section class="recap"><h2>Week {week} recap</h2><div class="prose" data-format="markdown">{render_recap(summary)}</div></section>' if summary else '<p class="note">AI recap omitted. Add <code>OPENAI_API_KEY</code> to enable it.</p>'
     playoffs_html = f'<section><h2>Playoff probabilities</h2>{_table(playoffs)}</section>' if playoffs is not None else ""
     generated = datetime.now(timezone.utc).strftime("%B %d, %Y at %H:%M UTC")
     html = f'''<!doctype html>
@@ -37,7 +73,7 @@ def render_site(*, output: Path, title: str, league_name: str, season: str, week
 <meta name="description" content="Weekly Sleeper fantasy football power rankings for {escape(league_name)}">
 <title>{escape(title)}</title><link rel="stylesheet" href="assets/site.css"></head>
 <body><header class="{hero_class}"><div class="wrap"><p class="eyebrow">{escape(season)} · Week {week}</p><h1>{escape(title)}</h1><p>{escape(league_name)} · Powered by Sleeper results and KeepTradeCut roster values</p></div></header>
-<main class="wrap"><section><div class="section-title"><div><p class="eyebrow">The table</p><h2>Power rankings</h2></div><p class="note">{escape(METHODOLOGY)}</p></div>{_table(rankings, ("roster_id", "Performance Score", "Roster Value"))}</section>
+<main class="wrap">{HOME_NAV}<section><div class="section-title"><div><p class="eyebrow">The table</p><h2>Power rankings</h2></div><p class="note">{escape(METHODOLOGY)}</p></div>{_table(rankings, ("roster_id", "Performance Score", "Roster Value"))}</section>
 {summary_html}{playoffs_html}<section><h2>Projected standings</h2>{_table(standings)}</section><section><h2>Luck index</h2><p class="note">Positive means fortunate; negative means unlucky. Based on opponent draw, score consistency, and close-game outcomes.</p>{_table(luck)}</section>
 <footer>Generated {generated}. Data updates when the scheduled GitHub workflow runs.</footer></main></body></html>'''
     (output / "index.html").write_text(html, encoding="utf-8")
@@ -73,4 +109,12 @@ def render_preseason(*, output: Path, title: str, league_name: str, season: str)
 
 CSS += """
 .teaser{min-height:100vh;background:#080b09;color:#e8eee9;display:grid;place-items:center;overflow:hidden}.teaser:before{content:"";position:fixed;inset:-30%;background:radial-gradient(circle,#1d694933 0,transparent 45%);animation:pulse 7s ease-in-out infinite}.teaser-inner{position:relative;width:min(720px,calc(100% - 40px));padding:72px 20px;text-align:center}.teaser h1{font:800 clamp(3.4rem,12vw,8rem)/.86 Georgia,serif;letter-spacing:-.055em;margin:.2em 0}.teaser-copy{color:#91a097;font-size:clamp(1rem,2.5vw,1.3rem);letter-spacing:.08em}.signal{width:10px;height:10px;margin:0 auto 40px;border-radius:50%;background:#ee5b2b;box-shadow:0 0 30px #ee5b2b;animation:blink 2.4s ease-in-out infinite}.timestamp{margin-top:72px;color:#3d4942;font-size:.68rem;letter-spacing:.12em;text-transform:uppercase}@keyframes pulse{50%{transform:scale(1.18);opacity:.55}}@keyframes blink{50%{opacity:.18;box-shadow:0 0 6px #ee5b2b}}
+"""
+
+CSS += """
+.report-nav{margin:0 0 24px}.home-button{display:inline-flex;align-items:center;min-height:44px;padding:9px 18px;border:1px solid var(--green);border-radius:10px;color:var(--green);font-weight:700;text-decoration:none;background:var(--card)}
+.home-button:hover{background:var(--green);color:white}a:focus-visible{outline:3px solid var(--accent);outline-offset:4px}
+.prose p{margin:0 0 1.1em}.prose h3{font:700 clamp(1.25rem,3vw,1.6rem)/1.25 Georgia,serif;margin:1.6em 0 .6em;color:var(--ink)}.prose h3:first-child{margin-top:0}.prose ul,.prose ol{padding-left:1.4em;margin:0 0 1.2em}.prose li{margin:.4em 0}.prose a{color:var(--green)}.prose{overflow-wrap:anywhere}
+.section-title{align-items:start;flex-wrap:wrap}.section-title .note{max-width:640px;margin:0 0 20px}.section-title>div{flex:1 0 220px}
+.archive-intro{color:var(--muted);margin:0 0 24px}.report-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:14px;list-style:none;padding:0;margin:0}.report-list a,.report-list a:visited{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px 22px;min-height:72px;border:1px solid var(--line);border-radius:12px;background:var(--paper);color:var(--ink);font-weight:700;text-decoration:none}.report-list a:hover{border-color:var(--green);background:#eaf0e8}.report-list .arrow{color:var(--green)}
 """
