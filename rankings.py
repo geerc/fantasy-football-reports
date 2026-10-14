@@ -6,6 +6,7 @@ import pandas as pd
 from fuzzywuzzy import fuzz, process
 
 from sleeper_rankings.rankings import performance_score
+from sleeper_rankings.power import power_scores, win_probability
 
 
 PLAYER_ALIASES = {"Marquise Brown": "Hollywood Brown"}
@@ -102,16 +103,10 @@ def generate_power_rankings(league, week: int, values_path) -> tuple[pd.DataFram
         missing = result.loc[result["Value"].isna(), "Team"].tolist()
         raise ValueError(f"Incomplete ranking inputs; missing player values for: {', '.join(missing)}")
 
-    def normalize(series: pd.Series) -> pd.Series:
-        span = series.max() - series.min()
-        return pd.Series(0.5, index=series.index) if span == 0 else (series - series.min()) / span
-
-    value_weight = round(0.5585 * np.exp(-0.1147 * week), 2)
-    result["Power Score"] = normalize(result["Performance Score"]) * (1 - value_weight) + normalize(result["Value"]) * value_weight
+    result["Power Score"] = power_scores(result["Performance Score"], result["Value"], week)
     result["Performance Rank"] = result["Performance Score"].rank(ascending=False, method="min").astype(int)
     result["KTC Value Rank"] = result["Value"].rank(ascending=False, method="min").astype(int)
-    result["Power Score"] = (result["Power Score"] * 100).round()
-    result = result.sort_values("Power Score", ascending=False)[["Team", "Power Score", "Performance Rank", "KTC Value Rank"]]
+    result = result.sort_values(["Power Score", "Performance Score"], ascending=False)[["Team", "Power Score", "Performance Rank", "KTC Value Rank"]]
     result.index = range(1, len(result) + 1)
     return result, players
 
@@ -142,8 +137,7 @@ def generate_expected_standings(league, rankings: pd.DataFrame, week: int, regul
         for week_number, opponent in enumerate(team.schedule, start=1):
             if week_number <= week or week_number > regular_season_weeks:
                 continue
-            denominator = scores[team.team_name] + scores[opponent.team_name]
-            probabilities.append(0.5 if denominator == 0 else scores[team.team_name] / denominator)
+            probabilities.append(win_probability(scores[team.team_name], scores[opponent.team_name]))
             opponent_scores.append(scores[opponent.team_name])
         rows.append([
             team.team_name,
@@ -177,8 +171,7 @@ def generate_playoff_probabilities(league, rankings: pd.DataFrame, week: int, re
         for home, away in matchups:
             home_strength = strength[team_names[home]]
             away_strength = strength[team_names[away]]
-            denominator = home_strength + away_strength
-            home_probability = 0.5 if denominator == 0 else home_strength / denominator
+            home_probability = win_probability(home_strength, away_strength)
             totals[home if rng.random() < home_probability else away] += 1
         order = np.argsort(totals)[::-1]
         for seed_number, index in enumerate(order[:playoff_teams]):

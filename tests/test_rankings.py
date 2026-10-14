@@ -143,5 +143,5 @@ def test_playoff_simulation_weights_matchups_by_power_score(matchup):
     )
 
     probabilities = result.set_index("Team")["Playoffs"].str.rstrip("%").astype(float)
-    assert probabilities["Strong"] > 85
-    assert probabilities["Weak"] < 15
+    assert probabilities["Strong"] > 80
+    assert probabilities["Weak"] < 20

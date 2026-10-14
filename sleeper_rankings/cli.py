@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from .api import SleeperClient
 from .archive import build_archive, entry_path, with_previous
 from .loader import completed_week, load_league
+from .power import FORMULA_VERSION
 from .rankings import add_weekly_change, luck_index, playoff_probabilities, power_rankings, projected_standings
 from .render import render_preseason, render_site
 from .summary import generate_summary
@@ -72,7 +73,7 @@ def run(args: argparse.Namespace) -> Path:
     (destination / "rankings.json").write_text(rankings.to_json(orient="records"))
     if not snapshot_path.exists():
         values.to_csv(snapshot_path, index=False)
-    (destination / "report.json").write_text(json.dumps({"league_id": str(league_id), "season": league["season"], "week": week}))
+    (destination / "report.json").write_text(json.dumps({"league_id": str(league_id), "season": league["season"], "week": week, "power_formula": FORMULA_VERSION}))
     return build_archive(args.content, args.output, config)
 
 

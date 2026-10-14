@@ -118,7 +118,7 @@ def test_identical_inputs_receive_identical_non_extreme_power_scores():
         {"name": "Player Two", "position": "QB", "nfl_team": "BBB", "value": 5000},
     ])
     result = power_rankings(data, 1, values)
-    assert list(result["Power Score"]) == [50, 50]
+    assert list(result["Power Score"]) == [100, 100]
 
 
 def test_incomplete_week_is_rejected():

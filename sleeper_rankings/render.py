@@ -8,6 +8,8 @@ import shutil
 
 import pandas as pd
 
+from .power import METHODOLOGY
+
 
 def _table(frame: pd.DataFrame, hidden: tuple[str, ...] = ()) -> str:
     display = frame.drop(columns=[column for column in hidden if column in frame], errors="ignore").copy()
@@ -35,7 +37,7 @@ def render_site(*, output: Path, title: str, league_name: str, season: str, week
 <meta name="description" content="Weekly Sleeper fantasy football power rankings for {escape(league_name)}">
 <title>{escape(title)}</title><link rel="stylesheet" href="assets/site.css"></head>
 <body><header class="{hero_class}"><div class="wrap"><p class="eyebrow">{escape(season)} · Week {week}</p><h1>{escape(title)}</h1><p>{escape(league_name)} · Powered by Sleeper results and KeepTradeCut roster values</p></div></header>
-<main class="wrap"><section><div class="section-title"><div><p class="eyebrow">The table</p><h2>Power rankings</h2></div><p class="note">Based on all-play performance and current redraft team value.</p></div>{_table(rankings, ("roster_id", "Performance Score", "Roster Value"))}</section>
+<main class="wrap"><section><div class="section-title"><div><p class="eyebrow">The table</p><h2>Power rankings</h2></div><p class="note">{escape(METHODOLOGY)}</p></div>{_table(rankings, ("roster_id", "Performance Score", "Roster Value"))}</section>
 {summary_html}{playoffs_html}<section><h2>Projected standings</h2>{_table(standings)}</section><section><h2>Luck index</h2><p class="note">Positive means fortunate; negative means unlucky. Based on opponent draw, score consistency, and close-game outcomes.</p>{_table(luck)}</section>
 <footer>Generated {generated}. Data updates when the scheduled GitHub workflow runs.</footer></main></body></html>'''
     (output / "index.html").write_text(html, encoding="utf-8")

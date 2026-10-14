@@ -242,3 +242,41 @@ The Kamara adds 10 pounds       0        12       0  Julia Selleck
 
 *These standings do not account for tiesbreakers
 ```
+
+## Power Score (power-v2)
+
+ESPN and Sleeper share `sleeper_rankings/power.py`. The neutral benchmark is 100;
+there is no clipping, min–max normalization, or imposed score floor/ceiling.
+Scores are displayed to one decimal place and sorted by score, then performance.
+
+```
+roster_weight = 0.20 + 0.25 * 2 ** (-(week - 1) / 5)
+performance_strength = (performance_score - 0.50) / 0.25
+roster_strength = (roster_value / league_median_roster_value - 1) / 0.25
+Power Score = 100 + 30 * ((1 - roster_weight) * performance_strength
+                        + roster_weight * roster_strength)
+```
+
+The performance formula remains 50% All-Play, 30% weekly scoring strength,
+and 20% recent scoring strength. Head-to-head records and schedules never
+enter rankings. Fixed scaling means a .25 performance improvement or a roster
+value 25% above the median contributes one strength unit before blending.
+Roster weight starts at 45%, is about 34.4% in Week 5, and approaches 20%.
+100 is a neutral benchmark, not a forced weekly mean. Existing platform-specific
+roster valuation methods remain unchanged (Sleeper redraft versus ESPN dynasty).
+
+Historical comparisons are approximate. Competition, roster composition and
+valuation methods, season timing/weights, and sample size all influence scores.
+League-median roster values also move, so a team's score can change without its
+own roster changing. Cross-league and cross-platform comparisons are especially
+approximate. All-Play and scoring-strength inputs retain their natural bounds;
+removing Power Score clipping does not remove those input constraints.
+Old reports remain untouched and are not on this scale. New reports include
+`power-v2` in their methodology and metadata; regenerate historical reports
+explicitly if comparing scores. Weekly movement across formula versions can
+reflect the methodology change as well as team performance.
+
+Projected wins/playoff simulations use score differences rather than ratios:
+`P(A wins) = logistic((score_A - score_B) * ln(3) / 50)`. Equal ratings give 50%;
+a 50-point advantage gives 75%. This is an unfitted heuristic, not a calibrated
+forecast, and remains valid for negative or zero ratings.

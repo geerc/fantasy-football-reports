@@ -10,6 +10,7 @@ import pandas as pd
 from fuzzywuzzy import fuzz
 
 from .models import LeagueData, Team
+from .power import power_scores, win_probability
 
 
 PERFORMANCE_HALF_LIFE = 6.0
@@ -37,17 +38,6 @@ def _weekly_strength(values: list[float], value: float) -> float:
     if scale == 0:
         scale = float(np.std(values))
     return 0.5 if scale == 0 else _cdf((value - median) / scale)
-
-
-def _relative_score(series: pd.Series, minimum_spread: float) -> pd.Series:
-    """Produce stable 10-90 ratings while preserving meaningful input gaps."""
-    values = series.astype(float)
-    observed_spread = float(values.std(ddof=0))
-    if observed_spread == 0:
-        return pd.Series(50.0, index=series.index)
-    spread = max(observed_spread, minimum_spread)
-    z = ((values - float(values.mean())) / spread).clip(-2.5, 2.5)
-    return z.map(lambda item: 10 + 80 * _cdf(float(item)))
 
 
 def performance_score(data: LeagueData, team: Team, week: int) -> float:
@@ -164,11 +154,7 @@ def power_rankings(data: LeagueData, week: int, values: pd.DataFrame) -> pd.Data
     roster_value = roster_values(data, values)
     rows = [{"Team": team.name, "roster_id": team.roster_id, "Performance Score": performance_score(data, team, week), "Roster Value": roster_value[team.roster_id]} for team in data.teams]
     frame = pd.DataFrame(rows)
-    value_weight = 0.20 + 0.25 * math.exp(-math.log(2) * (week - 1) / 5)
-    performance_rating = _relative_score(frame["Performance Score"], 0.15)
-    typical_value = max(abs(float(frame["Roster Value"].median())) * 0.10, 250.0)
-    value_rating = _relative_score(frame["Roster Value"], typical_value)
-    frame["Power Score"] = (performance_rating * (1 - value_weight) + value_rating * value_weight).round().astype(int)
+    frame["Power Score"] = power_scores(frame["Performance Score"], frame["Roster Value"], week)
     frame["Performance Rank"] = frame["Performance Score"].rank(ascending=False, method="min").astype(int)
     frame["Team Value Rank"] = frame["Roster Value"].rank(ascending=False, method="min").astype(int)
     frame = frame.sort_values(["Power Score", "Performance Score"], ascending=False).reset_index(drop=True)
@@ -232,8 +218,7 @@ def projected_standings(data: LeagueData, rankings: pd.DataFrame, week: int) -> 
             if number >= len(team.opponents) or team.opponents[number] is None:
                 continue
             opponent_score = scores[team.opponents[number]]
-            denominator = scores[team.roster_id] + opponent_score
-            expected += 0.5 if denominator == 0 else scores[team.roster_id] / denominator
+            expected += win_probability(scores[team.roster_id], opponent_score)
             remaining += 1
             if median_game:
                 below = sum(value < scores[team.roster_id] for value in ordered_strength)
@@ -268,8 +253,7 @@ def playoff_probabilities(data: LeagueData, rankings: pd.DataFrame, week: int, s
                     continue
                 seen.add(pair)
                 left, right = pair
-                denominator = strength[left] + strength[right]
-                probability = 0.5 if denominator == 0 else strength[left] / denominator
+                probability = win_probability(strength[left], strength[right])
                 wins[index[left if rng.random() < probability else right]] += 1
             if median_game:
                 # Rank a noisy weekly strength draw; the top half earns the median-game win.
