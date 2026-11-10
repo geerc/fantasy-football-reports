@@ -13,7 +13,7 @@ def _table(frame):
 
 
 def render_report(*, year, week, rankings, summary, playoff_probabilities, expected_standings, luck_index):
-    sections = ["+++", f'title = "Week {week} {year} Report"', f'date = "{date.today()}"', "draft = false", "hideSummary = true", "hideMeta = true", f'powerFormula = "{FORMULA_VERSION}"', "+++", "", "# POWER RANKINGS", "", METHODOLOGY, "", _table(rankings)]
+    sections = ["+++", f'title = "Week {week} {year} Report"', f'cover = {{ image = "week{week}.jpg" }}', f'date = "{date.today()}"', "draft = false", "hideSummary = true", "hideMeta = true", f'powerFormula = "{FORMULA_VERSION}"', "+++", "", "# POWER RANKINGS", "", METHODOLOGY, "", _table(rankings)]
     if summary:
         sections.extend(["", summary])
     if playoff_probabilities is not None:

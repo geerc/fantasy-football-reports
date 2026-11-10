@@ -12,7 +12,7 @@ def test_report_rendering_handles_optional_sections():
     assert "Week 1 2026 Report" in content
     assert "Current Playoff Probabilities" not in content
     assert "Projected Standings" in content
-    assert "cover" not in content
+    assert 'cover = { image = "week1.jpg" }' in content.split("+++", 2)[1]
     assert ".jpeg" not in content
     assert "hideSummary = true" in content
     assert "hideMeta = true" in content
