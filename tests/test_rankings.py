@@ -98,6 +98,16 @@ def test_weekly_change_supports_new_and_renamed_teams():
     assert "—" in result.loc[2, "Weekly Change"]
 
 
+def test_weekly_change_uses_displayed_order_not_dataframe_index():
+    current = pd.DataFrame({"Team": ["Final Deztination", "OC Gang"]}, index=[0, 1])
+    previous = pd.DataFrame({"Team": ["OC Gang", "Final Deztination"]}, index=[0, 1])
+
+    result = add_weekly_change(current, previous)
+
+    assert "↑ 1" in result.loc[0, "Weekly Change"]
+    assert "↓ 1" in result.loc[1, "Weekly Change"]
+
+
 def test_expected_standings_use_dynamic_regular_season_length():
     alpha = FakeTeam("Alpha", wins=2, losses=1)
     beta = FakeTeam("Beta", wins=1, losses=2)

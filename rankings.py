@@ -113,8 +113,10 @@ def generate_power_rankings(league, week: int, values_path) -> tuple[pd.DataFram
 
 def add_weekly_change(current: pd.DataFrame, previous: pd.DataFrame) -> pd.DataFrame:
     current = current.copy()
-    current_positions = {team: rank for rank, team in current["Team"].items()}
-    previous_positions = {team: rank for rank, team in previous["Team"].items()}
+    # Rank by displayed row order. DataFrame indexes are labels and may have
+    # been reset or preserved from an earlier operation; they are not ranks.
+    current_positions = {team: position for position, team in enumerate(current["Team"], start=1)}
+    previous_positions = {team: position for position, team in enumerate(previous["Team"], start=1)}
     def display(team: str) -> str:
         if team not in previous_positions:
             return "NEW"
