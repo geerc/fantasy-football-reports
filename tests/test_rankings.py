@@ -99,8 +99,15 @@ def test_weekly_change_supports_new_and_renamed_teams():
 
 
 def test_weekly_change_uses_displayed_order_not_dataframe_index():
-    current = pd.DataFrame({"Team": ["Final Deztination", "OC Gang"]}, index=[0, 1])
-    previous = pd.DataFrame({"Team": ["OC Gang", "Final Deztination"]}, index=[0, 1])
+    current = pd.DataFrame(
+        {"Team": ["Final Deztination", "OC Gang"], "Power Score": [90, 80],
+         "Performance Rank": [1, 2], "KTC Value Rank": [1, 2]},
+        index=[0, 1],
+    )
+    previous = pd.DataFrame(
+        {"Team": ["OC Gang", "Final Deztination"], "Power Score": [90, 80]},
+        index=[0, 1],
+    )
 
     result = add_weekly_change(current, previous)
 
